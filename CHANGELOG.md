@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial scaffold and repository bootstrap.
 - REPS compliance baseline.
-- CI for Linux/macOS/Windows on stable and MSRV (1.75).
+- CI for Linux/macOS/Windows on stable and MSRV (1.85).
 
 [Unreleased]: https://github.com/jamesgober/arena-lib/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/jamesgober/arena-lib/releases/tag/v0.1.0

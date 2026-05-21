@@ -1,4 +1,4 @@
-﻿<h1 align="center">
+<h1 align="center">
     <img width="99" alt="Rust logo" src="https://raw.githubusercontent.com/jamesgober/rust-collection/72baabd71f00e14aa9184efcb16fa3deddda3a0a/assets/rust-logo.svg">
     <br>
     <strong>arena-lib</strong>
@@ -18,25 +18,50 @@
 
 <br>
 
-## What it does
+## Why arena-lib
 
-Typed memory arena and slab allocator library. Generational indices, typed arenas (one allocation per type), interned strings, and bump allocation. Zero unsafe leakage into user code.
+Allocator-aware Rust normally means juggling three or four crates: one for slab storage, one for handle stability, one for string interning, plus a bump arena for short-lived scratch. `arena-lib` collects those primitives behind a single, safe, REPS-disciplined surface so you can move fast without paying for it later.
+
+Designed around four guarantees:
+
+- **Typed arenas** — one backing allocation per element type, predictable layout, cache-friendly traversal.
+- **Generational indices** — stable handles that catch use-after-free without reference counting.
+- **String interning** — O(1) equality and compact storage for repeated identifiers.
+- **Bump allocation** — short-lived scratch regions that reset in constant time.
+
+Every public path is safe Rust. `unsafe` lives only in measured, documented internals — never in your call sites.
+
+> **Status:** Early scaffolding (v0.1.0). The public API is being designed for the 1.0 release. Today the crate compiles, exposes `VERSION`, and is safe to depend on for tracking — full allocator surfaces land in upcoming milestones.
 
 ---
 
 ## Quick start
+
+Add the crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
 arena-lib = "0.1"
 ```
 
+Verify the dependency is wired up:
+
+```rust
+use arena_lib::VERSION;
+
+fn main() {
+    println!("running arena-lib {VERSION}");
+}
+```
+
+The full allocator API lands in the 0.2 milestone. See [docs/API.md](docs/API.md) for the live API reference.
+
 ---
 
 ## Standards
 
 - **REPS** governs every decision. See [REPS.md](REPS.md).
-- **MSRV:** Rust 1.75.
+- **MSRV:** Rust 1.85.
 - **Edition:** 2024.
 - **Cross-platform:** Linux, macOS, Windows.
 

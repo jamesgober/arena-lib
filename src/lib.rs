@@ -1,4 +1,4 @@
-﻿//! # arena-lib
+//! # arena-lib
 //!
 //! TYPED MEMORY ARENAS AND SLAB ALLOCATION
 //!
@@ -6,8 +6,9 @@
 //!
 //! # Status
 //!
-//! Early scaffolding. Public API not yet defined. See [the repository](https://github.com/jamesgober/arena-lib)
-//! and .dev/ROADMAP.md for the milestone plan.
+//! Early scaffolding (v0.1.0). The public API is being designed for the 1.0 release.
+//! The crate currently compiles and exposes [`VERSION`] only. See
+//! [the repository](https://github.com/jamesgober/arena-lib) for the milestone plan.
 //!
 //! # License
 //!
@@ -31,4 +32,16 @@
 #![deny(clippy::missing_safety_doc)]
 
 /// Crate version string, populated by Cargo at build time.
+///
+/// Matches the `version` field in `Cargo.toml` exactly. Useful for diagnostics,
+/// telemetry, and `--version` output in tools that embed `arena-lib`.
+///
+/// # Examples
+///
+/// ```
+/// use arena_lib::VERSION;
+///
+/// assert!(!VERSION.is_empty());
+/// assert!(VERSION.chars().next().is_some_and(|c| c.is_ascii_digit()));
+/// ```
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
