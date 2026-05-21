@@ -2,13 +2,52 @@
 //!
 //! TYPED MEMORY ARENAS AND SLAB ALLOCATION
 //!
-//! Generational indices, typed arenas, interned strings, bump allocation. Zero unsafe leakage into user code.
+//! `arena-lib` collects four allocator primitives behind a single, safe Rust
+//! surface: a generational [`Arena`], a string [`Interner`], a [`Bump`]
+//! arena, and the supporting [`Index`] / [`Symbol`] / [`Error`] types. Every
+//! public path is safe Rust; `unsafe` is internal-only, measured, and
+//! documented at the call site.
 //!
-//! # Status
+//! # Quick tour
 //!
-//! Early scaffolding (v0.1.0). The public API is being designed for the 1.0 release.
-//! The crate currently compiles and exposes [`VERSION`] only. See
-//! [the repository](https://github.com/jamesgober/arena-lib) for the milestone plan.
+//! ```
+//! use arena_lib::{Arena, Bump, Interner};
+//!
+//! // Generational arena — stable handles, use-after-free detection.
+//! let mut arena = Arena::new();
+//! let alice = arena.insert("alice");
+//! let bob = arena.insert("bob");
+//! assert_eq!(arena.get(alice), Some(&"alice"));
+//! let _ = arena.remove(alice);
+//! assert_eq!(arena.get(alice), None); // stale handle, safely rejected
+//!
+//! // Interner — O(1) equality on repeated identifiers.
+//! let mut interner = Interner::new();
+//! let id_a = interner.intern("user:42");
+//! let id_b = interner.intern("user:42");
+//! assert_eq!(id_a, id_b);
+//!
+//! // Bump arena — fast scratch, reset in O(1).
+//! let mut bump = Bump::with_capacity(64);
+//! let n = bump.alloc(7_u32);
+//! assert_eq!(*n, 7);
+//! bump.reset();
+//!
+//! let _ = bob;
+//! ```
+//!
+//! # Modules
+//!
+//! - [`arena`] — generational arena and [`Index`] handle.
+//! - [`intern`] — string interner and [`Symbol`] handle.
+//! - [`bump`] — bump arena for short-lived scratch.
+//! - [`error`] — single public [`Error`] type and [`Result`] alias.
+//! - [`prelude`] — convenience re-exports for downstream crates.
+//!
+//! # `no_std`
+//!
+//! Disable default features (`std`) to compile under `#![no_std]`. The crate
+//! still requires `alloc` — it is pulled in automatically.
 //!
 //! # License
 //!
@@ -30,6 +69,19 @@
 #![deny(clippy::dbg_macro)]
 #![deny(clippy::undocumented_unsafe_blocks)]
 #![deny(clippy::missing_safety_doc)]
+
+extern crate alloc;
+
+pub mod arena;
+pub mod bump;
+pub mod error;
+pub mod intern;
+pub mod prelude;
+
+pub use crate::arena::{Arena, Index};
+pub use crate::bump::Bump;
+pub use crate::error::{Error, Result};
+pub use crate::intern::{Interner, Symbol};
 
 /// Crate version string, populated by Cargo at build time.
 ///

@@ -31,7 +31,7 @@ Designed around four guarantees:
 
 Every public path is safe Rust. `unsafe` lives only in measured, documented internals — never in your call sites.
 
-> **Status:** Early scaffolding (v0.1.0). The public API is being designed for the 1.0 release. Today the crate compiles, exposes `VERSION`, and is safe to depend on for tracking — full allocator surfaces land in upcoming milestones.
+> **Status:** v0.2.0 (Foundation). The four core primitives — generational arena, string interner, bump arena, and the shared `Error` type — are live and tested. The 1.0 contract is in place; the 0.5 milestone tunes hot paths and grows the bump arena to multi-chunk.
 
 ---
 
@@ -41,20 +41,40 @@ Add the crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-arena-lib = "0.1"
+arena-lib = "0.2"
 ```
 
-Verify the dependency is wired up:
+End-to-end use of every primitive:
 
 ```rust
-use arena_lib::VERSION;
+use arena_lib::prelude::*;
 
 fn main() {
-    println!("running arena-lib {VERSION}");
+    // Generational arena — stable handles, use-after-free detection.
+    let mut arena: Arena<&'static str> = Arena::with_capacity(8);
+    let alice = arena.insert("alice");
+    let bob = arena.insert("bob");
+    assert_eq!(arena.get(alice), Some(&"alice"));
+
+    // String interner — O(1) equality on repeated identifiers.
+    let mut interner = Interner::with_capacity(8);
+    let id_a = interner.intern("user:alice");
+    let id_b = interner.intern("user:alice");
+    assert_eq!(id_a, id_b);
+
+    // Bump arena — fast scratch, reset in O(1).
+    let bump = Bump::with_capacity(64);
+    let scratch = bump.alloc([0_u8; 16]);
+    assert_eq!(scratch.len(), 16);
+
+    // Removing a slot invalidates its handle without touching the rest.
+    assert_eq!(arena.remove(alice), Some("alice"));
+    assert!(arena.get(alice).is_none());
+    assert!(arena.get(bob).is_some());
 }
 ```
 
-The full allocator API lands in the 0.2 milestone. See [docs/API.md](docs/API.md) for the live API reference.
+See [docs/API.md](docs/API.md) for the full reference, including the planned 1.0 surface.
 
 ---
 

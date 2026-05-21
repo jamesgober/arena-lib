@@ -18,7 +18,7 @@
 
 This document is the canonical reference for every public-facing item in the `arena-lib` crate. It tracks the source of truth in `src/` and is updated before every release.
 
-> **Status:** `arena-lib` is in early scaffolding (v0.1.0). The full allocator surface — typed arenas, generational indices, string interning, and bump allocation — is being designed for the 1.0 release. Only the items listed under [Public APIs](#public-apis) are stable today. New sections will be added here as each milestone lands.
+> **Status:** `arena-lib` `0.2.0` ships the **foundation** API surface — generational arena, string interner, bump arena, error type — that the 1.0 release will preserve. Implementations are correct and tested but lean; the 0.5 milestone tunes hot paths, swaps the interner's lookup map to a hash table, and replaces the bump arena's fixed chunk with a growing linked list.
 
 <br>
 
@@ -27,9 +27,21 @@ This document is the canonical reference for every public-facing item in the `ar
 - **[Installation](#installation)**
 - **[Quick Start](#quick-start)**
 - **[Public APIs](#public-apis)**
-  - [Crate-level documentation](#crate-level-documentation)
   - [Constants](#constants)
     - [`VERSION`](#version)
+  - [Error handling](#error-handling)
+    - [`Error`](#error)
+    - [`Result<T>`](#result)
+  - [Generational Arena](#generational-arena)
+    - [`Arena<T>`](#arena)
+    - [`Index`](#index)
+    - [`Iter` / `IterMut`](#arena-iter)
+  - [String Interner](#string-interner)
+    - [`Interner`](#interner)
+    - [`Symbol`](#symbol)
+  - [Bump Arena](#bump-arena)
+    - [`Bump`](#bump)
+  - [Prelude](#prelude)
 - **[Feature Flags](#feature-flags)**
   - [`std`](#feature-std)
 - **[Compatibility](#compatibility)**
@@ -44,7 +56,7 @@ Add `arena-lib` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-arena-lib = "0.1"
+arena-lib = "0.2"
 ```
 
 Or with `cargo`:
@@ -53,51 +65,52 @@ Or with `cargo`:
 cargo add arena-lib
 ```
 
-To pin the latest published patch:
+Build under `no_std`:
 
 ```toml
 [dependencies]
-arena-lib = { version = "0.1", default-features = true }
+arena-lib = { version = "0.2", default-features = false }
 ```
 
-To build without the standard library:
-
-```toml
-[dependencies]
-arena-lib = { version = "0.1", default-features = false }
-```
-
-See [Feature Flags](#feature-flags) for the full feature matrix.
+See [Feature Flags](#feature-flags) for the full matrix.
 
 <br>
 
 <h2 id="quick-start">Quick Start</h2>
 
-The 0.1.0 release exposes a single constant. Wire the crate in and confirm the dependency resolves:
+The 0.2 release ships four collaborating primitives. The example below wires them together end-to-end:
 
 ```rust
-use arena_lib::VERSION;
+use arena_lib::prelude::*;
 
-fn main() {
-    println!("arena-lib version: {VERSION}");
-}
+// Stable handles into a session table.
+let mut arena: Arena<&'static str> = Arena::with_capacity(8);
+let alice = arena.insert("alice");
+let bob = arena.insert("bob");
+assert_eq!(arena.get(alice), Some(&"alice"));
+
+// Compact identifiers for repeated strings.
+let mut interner = Interner::with_capacity(8);
+let alice_id = interner.intern("user:alice");
+let alice_again = interner.intern("user:alice");
+assert_eq!(alice_id, alice_again);
+
+// Fast scratch with O(1) reset.
+let bump = Bump::with_capacity(64);
+let scratch = bump.alloc([0_u8; 16]);
+assert_eq!(scratch.len(), 16);
+
+// Removing a slot invalidates its handle without affecting the rest.
+assert_eq!(arena.remove(alice), Some("alice"));
+assert!(arena.get(alice).is_none());
+assert!(arena.get(bob).is_some());
 ```
-
-That's the entire usable surface at this milestone. Subsequent releases will expand this section with allocator construction, handle issuance, and bump-region examples. See [Planned API Surface](#planned-api-surface-10) for what's coming and on what timeline.
 
 <br>
 
 <h2 id="public-apis">Public APIs</h2>
 
 Every item listed in this section is part of the published, semver-tracked surface of `arena-lib`. Items not listed here are either internal or not yet released.
-
-<br>
-
-<h3 id="crate-level-documentation">Crate-level documentation</h3>
-
-The crate root carries the high-level rustdoc that appears on the [docs.rs landing page](https://docs.rs/arena-lib). It restates the project goals (typed arenas, generational indices, string interning, bump allocation), the safety posture (`unsafe` is internal and measured), and links back to the repository for the roadmap.
-
-**Lint posture:** the crate root configures `#![deny(...)]` for the REPS-mandated lints, including `missing_docs`, `unsafe_op_in_unsafe_fn`, `unused_must_use`, `unused_results`, `clippy::unwrap_used`, `clippy::expect_used`, `clippy::todo`, `clippy::unimplemented`, `clippy::print_stdout`, `clippy::print_stderr`, `clippy::dbg_macro`, `clippy::undocumented_unsafe_blocks`, and `clippy::missing_safety_doc`. Downstream crates are unaffected — these lints apply to `arena-lib` itself.
 
 <br>
 
@@ -114,76 +127,543 @@ pub const VERSION: &str;
 Crate version string, populated by Cargo at build time from `CARGO_PKG_VERSION`. Mirrors the `version` field in `Cargo.toml` exactly.
 
 **Type:** `&'static str`
-
 **Stability:** stable since `0.1.0`. The value changes on every release.
 
-**When to use it:**
-
-- Surfacing the embedded `arena-lib` version in your binary's `--version` output.
-- Tagging diagnostics, traces, or metrics with the allocator version in use.
-- Sanity-checking that a downstream crate picked up the version you expected.
-
 **Examples**
-
-Read and print the version:
 
 ```rust
 use arena_lib::VERSION;
 
 println!("arena-lib v{VERSION}");
-```
-
-Assert a non-empty, well-formed value (useful in your own smoke tests):
-
-```rust
-use arena_lib::VERSION;
-
 assert!(!VERSION.is_empty());
-assert!(VERSION.chars().next().is_some_and(|c| c.is_ascii_digit()));
 ```
 
-Embed the allocator version in a structured log line:
+<br><br>
+
+<h3 id="error-handling">Error handling</h3>
+
+`arena-lib` exposes a single [`Error`](#error) enum so callers can match on every failure mode without juggling per-module error types. New variants may be introduced in minor releases — match using `_ =>` to stay forward-compatible.
+
+<br>
+
+<h4 id="error"><code>Error</code></h4>
 
 ```rust
-use arena_lib::VERSION;
-
-fn startup_banner(service: &str) -> String {
-    format!("{service} | arena-lib={VERSION}")
+#[non_exhaustive]
+pub enum Error {
+    StaleIndex,
+    CapacityExceeded,
+    CounterOverflow,
 }
+```
 
-let line = startup_banner("ingest");
-assert!(line.contains("arena-lib="));
+The crate-wide error type.
+
+**Variants**
+
+| Variant | When it is returned |
+| ------- | ------------------- |
+| `StaleIndex` | An [`Index`](#index) was used after its slot was removed (or it never belonged to the arena). |
+| `CapacityExceeded` | A [`Bump::try_alloc`](#bump) request exceeded the arena's remaining chunk space. |
+| `CounterOverflow` | The arena's slot counter or the interner's symbol counter would have wrapped past `u32::MAX`. |
+
+**Trait impls:** `Debug`, `Clone`, `PartialEq`, `Eq`, `Display`, and `std::error::Error` (under the `std` feature).
+
+**Examples**
+
+```rust
+use arena_lib::{Arena, Error};
+
+let arena: Arena<u32> = Arena::new();
+// A handle synthesised against a different arena is rejected.
+let bogus = arena_lib::Arena::<u32>::new();
+// (no Index can be synthesised by the user — handles come only from `insert`)
+let _ = arena.len();
+let _ = Error::StaleIndex; // pattern-match variants directly
+```
+
+<br>
+
+<h4 id="result"><code>Result&lt;T&gt;</code></h4>
+
+```rust
+pub type Result<T> = core::result::Result<T, Error>;
+```
+
+Result alias that uses [`Error`](#error) as the failure type. Used by every fallible entry point in the crate (`Arena::try_insert`, `Interner::try_intern`, `Bump::try_alloc`).
+
+<br><br>
+
+<h3 id="generational-arena">Generational Arena</h3>
+
+The arena module ships a slab-style container that hands out stable [`Index`](#index) handles. When a slot is freed, its generation counter advances, so any still-held handle pointing at that slot is detected and rejected — no use-after-free, no dangling references, all in safe Rust.
+
+**Cost summary**
+
+| Operation | Cost |
+| --------- | :--: |
+| `insert` | amortized O(1) |
+| `remove` | O(1) |
+| `get` / `get_mut` / `contains` | O(1) |
+| `iter` / `iter_mut` | O(capacity) |
+| `clear` | O(capacity) |
+
+<br>
+
+<h4 id="arena"><code>Arena&lt;T&gt;</code></h4>
+
+```rust
+pub struct Arena<T>;
+
+impl<T> Arena<T> {
+    // Construction
+    pub const fn new() -> Self;
+    pub fn with_capacity(capacity: usize) -> Self;
+    pub fn reserve(&mut self, additional: usize);
+
+    // Inspection
+    pub const fn len(&self) -> usize;
+    pub const fn is_empty(&self) -> bool;
+    pub fn capacity(&self) -> usize;
+    pub fn contains(&self, idx: Index) -> bool;
+
+    // Access
+    pub fn get(&self, idx: Index) -> Option<&T>;
+    pub fn get_mut(&mut self, idx: Index) -> Option<&mut T>;
+
+    // Insertion
+    pub fn insert(&mut self, value: T) -> Index;
+    pub fn try_insert(&mut self, value: T) -> Result<Index>;
+
+    // Removal
+    pub fn remove(&mut self, idx: Index) -> Option<T>;
+    pub fn clear(&mut self);
+
+    // Iteration
+    pub fn iter(&self) -> Iter<'_, T>;
+    pub fn iter_mut(&mut self) -> IterMut<'_, T>;
+}
+```
+
+The generational arena. `Arena::new` is `const` and allocates lazily; use `Arena::with_capacity(n)` when you already know how many slots you need.
+
+**Constructors**
+
+- `new` — empty arena, no allocation until first insert.
+- `with_capacity(n)` — pre-reserves room for `n` slots; arena still grows on demand.
+- `reserve(additional)` — reserves at least `additional` more slots.
+
+**Inspection**
+
+- `len` returns the count of live elements (not the slot count).
+- `is_empty` is `len() == 0`.
+- `capacity` returns the number of slots that can be held without reallocation (occupied + vacant).
+- `contains(idx)` returns `true` iff `idx` refers to a live element.
+
+**Access**
+
+- `get(idx)` returns `Some(&T)` only if the handle is still live; stale handles return `None`.
+- `get_mut(idx)` is the unique-borrow counterpart.
+
+**Insertion**
+
+- `insert(value)` returns a fresh [`Index`](#index). Panics only on the catastrophic case where the slot counter would overflow `u32::MAX`.
+- `try_insert(value)` returns `Ok(Index)` or `Err(Error::CounterOverflow)` — same semantics, explicit failure.
+
+**Removal**
+
+- `remove(idx)` returns the element if the handle is live (and increments the slot's generation counter, invalidating any other handle to that slot). Stale handles return `None`.
+- `clear()` removes every element, bumps every occupied generation, and retains capacity.
+
+**Iteration**
+
+- `iter()` yields `(Index, &T)` pairs for every live element in slot order.
+- `iter_mut()` yields `(Index, &mut T)` pairs.
+
+**Trait impls:** `Default`, `Debug` (where `T: Debug`).
+
+**Examples**
+
+End-to-end use:
+
+```rust
+use arena_lib::Arena;
+
+let mut arena = Arena::with_capacity(4);
+let a = arena.insert("alpha");
+let b = arena.insert("bravo");
+
+assert_eq!(arena.len(), 2);
+assert_eq!(arena.get(a), Some(&"alpha"));
+
+let removed = arena.remove(a);
+assert_eq!(removed, Some("alpha"));
+assert!(arena.get(a).is_none()); // stale
+assert_eq!(arena.get(b), Some(&"bravo"));
+```
+
+Slot reuse with generation bump:
+
+```rust
+use arena_lib::Arena;
+
+let mut arena = Arena::new();
+let first = arena.insert(1);
+let _ = arena.remove(first);
+let second = arena.insert(2);
+
+assert_eq!(first.slot(), second.slot()); // same slot reused
+assert_ne!(first.generation(), second.generation()); // different generation
+assert!(arena.get(first).is_none());        // old handle rejected
+assert_eq!(arena.get(second), Some(&2));    // new handle accepted
+```
+
+Mutating in place:
+
+```rust
+use arena_lib::Arena;
+
+let mut arena = Arena::new();
+let h = arena.insert(10_u32);
+if let Some(v) = arena.get_mut(h) {
+    *v = 42;
+}
+assert_eq!(arena.get(h), Some(&42));
+```
+
+Iteration:
+
+```rust
+use arena_lib::Arena;
+
+let mut arena = Arena::new();
+let _ = arena.insert("a");
+let killed = arena.insert("dead");
+let _ = arena.insert("b");
+let _ = arena.remove(killed);
+
+let live: Vec<_> = arena.iter().map(|(_, v)| *v).collect();
+assert_eq!(live, vec!["a", "b"]);
+```
+
+<br>
+
+<h4 id="index"><code>Index</code></h4>
+
+```rust
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Index { /* private fields */ }
+
+impl Index {
+    pub const fn slot(self) -> u32;
+    pub const fn generation(self) -> u32;
+}
+```
+
+Stable handle into an [`Arena`](#arena). An `Index` is 8 bytes (two `u32`s), `Copy`, and packs trivially into structs. The handle stays valid until the underlying element is removed; once stale, every arena lookup against it returns `None`.
+
+**Notes**
+
+- `slot()` is useful for diagnostics. Do **not** use it in place of the handle itself — slots are reused under new generations.
+- Index values are not portable across arenas. Using an `Index` issued by one `Arena<T>` against a different `Arena<T>` returns `None`.
+
+<br>
+
+<h4 id="arena-iter"><code>Iter</code> / <code>IterMut</code></h4>
+
+```rust
+pub struct Iter<'a, T>;
+pub struct IterMut<'a, T>;
+
+impl<'a, T> Iterator for Iter<'a, T> {
+    type Item = (Index, &'a T);
+}
+impl<'a, T> Iterator for IterMut<'a, T> {
+    type Item = (Index, &'a mut T);
+}
+```
+
+Iterators returned by [`Arena::iter`](#arena) and [`Arena::iter_mut`](#arena). Both skip vacant slots and yield `(Index, …)` pairs in slot order. Iteration is O(capacity) in the worst case (every slot vacant).
+
+<br><br>
+
+<h3 id="string-interner">String Interner</h3>
+
+A string interner deduplicates owned string storage: repeated calls with the same input return the same compact [`Symbol`](#symbol). Equality and hashing operate on the four-byte symbol rather than the underlying bytes — the win when the same identifier appears thousands of times across a workload.
+
+**Cost summary**
+
+| Operation | Cost |
+| --------- | :--: |
+| `intern` (first sight) | O(log n) |
+| `intern` (repeat sight) | O(log n) |
+| `resolve` | O(1) |
+| `lookup` / `contains` | O(log n) |
+| `len` / `is_empty` | O(1) |
+
+The 0.2 implementation uses an ordered map (`BTreeMap`) so the crate stays `no_std`-compatible without pulling in `hashbrown`. The 0.5 milestone switches the lookup map to a hash table for O(1) `intern` / `lookup`.
+
+<br>
+
+<h4 id="interner"><code>Interner</code></h4>
+
+```rust
+pub struct Interner;
+
+impl Interner {
+    pub const fn new() -> Self;
+    pub fn with_capacity(capacity: usize) -> Self;
+
+    pub fn len(&self) -> usize;
+    pub fn is_empty(&self) -> bool;
+
+    pub fn intern(&mut self, s: &str) -> Symbol;
+    pub fn try_intern(&mut self, s: &str) -> Result<Symbol>;
+
+    pub fn resolve(&self, symbol: Symbol) -> Option<&str>;
+    pub fn lookup(&self, s: &str) -> Option<Symbol>;
+    pub fn contains(&self, s: &str) -> bool;
+
+    pub fn iter(&self) -> Iter<'_>;
+}
+```
+
+The string interner.
+
+**Constructors**
+
+- `new` — empty interner, no allocation until first intern.
+- `with_capacity(n)` — pre-reserves storage for `n` distinct strings.
+
+**Interning**
+
+- `intern(s)` — idempotent. Returns the existing [`Symbol`](#symbol) if `s` was seen before; otherwise allocates a fresh symbol. Panics only on `u32::MAX` overflow.
+- `try_intern(s)` — explicit fallible variant returning `Result<Symbol>`.
+
+**Lookup**
+
+- `resolve(symbol)` — the inverse of `intern`. Returns `None` for symbols that did not originate from this interner.
+- `lookup(s)` — non-inserting query: returns the existing symbol if any, else `None`.
+- `contains(s)` — boolean form of `lookup`.
+
+**Iteration**
+
+- `iter()` yields `(Symbol, &str)` pairs for every interned string, in insertion order.
+
+**Trait impls:** `Default`, `Debug`.
+
+**Examples**
+
+Deduplication and round-trip:
+
+```rust
+use arena_lib::Interner;
+
+let mut interner = Interner::with_capacity(8);
+let a = interner.intern("user:42");
+let b = interner.intern("user:42");
+let c = interner.intern("user:7");
+
+assert_eq!(a, b);
+assert_ne!(a, c);
+assert_eq!(interner.resolve(a), Some("user:42"));
+assert_eq!(interner.len(), 2);
+```
+
+Non-inserting lookup:
+
+```rust
+use arena_lib::Interner;
+
+let mut interner = Interner::new();
+let _ = interner.intern("known");
+
+assert!(interner.contains("known"));
+assert!(interner.lookup("unknown").is_none());
+assert_eq!(interner.len(), 1); // lookup did not insert
+```
+
+<br>
+
+<h4 id="symbol"><code>Symbol</code></h4>
+
+```rust
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Symbol(/* private */);
+
+impl Symbol {
+    pub const fn id(self) -> u32;
+}
+```
+
+Compact 4-byte handle returned by [`Interner::intern`](#interner). Two symbols compare equal if and only if the strings they refer to were interned by the **same** [`Interner`](#interner) from byte-identical inputs. Symbols are not transferable across interners.
+
+<br><br>
+
+<h3 id="bump-arena">Bump Arena</h3>
+
+A linear allocator for short-lived scratch data. Allocations are O(1) (pointer bump + write); the entire arena clears in O(1) via [`Bump::reset`](#bump). Multiple references handed out from a shared `&self` borrow coexist safely because each allocation hands out a disjoint slice of the chunk.
+
+**Cost summary**
+
+| Operation | Cost |
+| --------- | :--: |
+| `alloc` / `try_alloc` | O(1) |
+| `reset` | O(1) |
+| `allocated_bytes` / `chunk_capacity` | O(1) |
+
+> **Drop policy.** `Bump` does **not** run destructors when reset or dropped. Allocate types that do not require `Drop` (anything that is `Copy`, or owns only arena-internal memory). The 0.5 milestone introduces a typed drop-arena variant for cases where this is too tight.
+>
+> **Growth policy.** 0.2 ships a **single-chunk** allocator: capacity is fixed at construction time and [`Bump::try_alloc`](#bump) returns [`Error::CapacityExceeded`](#error) when full. The 0.5 milestone replaces the internal chunk with a linked list of chunks so that `alloc` becomes effectively infallible.
+
+<br>
+
+<h4 id="bump"><code>Bump</code></h4>
+
+```rust
+pub struct Bump;
+
+impl Bump {
+    pub fn new() -> Self;
+    pub fn with_capacity(capacity: usize) -> Self;
+
+    pub fn chunk_capacity(&self) -> usize;
+    pub fn allocated_bytes(&self) -> usize;
+
+    pub fn alloc<T>(&self, value: T) -> &mut T;
+    pub fn try_alloc<T>(&self, value: T) -> Result<&mut T>;
+
+    pub fn reset(&mut self);
+}
+```
+
+Single-chunk bump arena.
+
+**Constructors**
+
+- `new` — empty arena that can satisfy only zero-sized allocations. Use [`Bump::with_capacity`](#bump) for any non-trivial use.
+- `with_capacity(n)` — backed by a fixed-size chunk of `n` bytes. Account for alignment padding in addition to raw value size.
+
+**Allocation**
+
+- `alloc(value)` — pointer bump + write, returning `&mut T` tied to `&self`. Panics if the chunk does not have room for `value`.
+- `try_alloc(value)` — explicit fallible variant returning `Result<&mut T>`.
+
+The returned `&mut T` borrows from `&self`: [`Bump`](#bump) owns the underlying chunk and hands out disjoint regions per call, so multiple `&mut T` from the same `&Bump` coexist without aliasing. This matches `bumpalo::Bump::alloc`.
+
+**Inspection**
+
+- `chunk_capacity()` — total bytes in the underlying chunk.
+- `allocated_bytes()` — bytes consumed since the most recent `reset` (or since construction). Includes alignment padding.
+
+**Reset**
+
+- `reset()` takes `&mut self`, statically guaranteeing no outstanding allocation reference can survive across the call. Capacity is retained.
+
+**Threading**
+
+`Bump` is `Send` (it owns a `Box<[u8]>`) but **not** `Sync` — concurrent `&self` allocation across threads is rejected at compile time. Use one `Bump` per thread, or wrap in `Arc<Mutex<Bump>>` if you must share.
+
+**Trait impls:** `Default`, `Debug`.
+
+**Examples**
+
+Basic allocation and reset:
+
+```rust
+use arena_lib::Bump;
+
+let mut bump = Bump::with_capacity(64);
+let a = bump.alloc(7_u32);
+let b = bump.alloc(42_u32);
+assert_eq!(*a, 7);
+assert_eq!(*b, 42);
+
+bump.reset();
+assert_eq!(bump.allocated_bytes(), 0);
+```
+
+Alignment is handled automatically:
+
+```rust
+use arena_lib::Bump;
+
+let bump = Bump::with_capacity(64);
+let _ = bump.alloc(1_u8);                // 1 byte
+let n = bump.alloc(0xdead_beef_u32);     // padded for u32 alignment
+assert_eq!(*n, 0xdead_beef);
+```
+
+Explicit error handling at capacity:
+
+```rust
+use arena_lib::{Bump, Error};
+
+let bump = Bump::with_capacity(4);
+let _ = bump.alloc(1_u32);
+match bump.try_alloc(2_u32) {
+    Ok(_) => unreachable!(),
+    Err(Error::CapacityExceeded) => { /* expected */ }
+    Err(other) => panic!("unexpected: {other:?}"),
+}
+```
+
+<br><br>
+
+<h3 id="prelude">Prelude</h3>
+
+```rust
+pub mod prelude {
+    pub use crate::arena::{Arena, Index};
+    pub use crate::bump::Bump;
+    pub use crate::error::{Error, Result};
+    pub use crate::intern::{Interner, Symbol};
+}
+```
+
+Glob-import this module to bring the most commonly used types into scope:
+
+```rust
+use arena_lib::prelude::*;
+
+let mut arena: Arena<&'static str> = Arena::new();
+let mut interner = Interner::new();
+let bump = Bump::with_capacity(64);
+
+let _ = arena.insert("alice");
+let _ = interner.intern("session-key");
+let _ = bump.alloc(7_u32);
 ```
 
 <br><br>
 
 <h2 id="feature-flags">Feature Flags</h2>
 
-`arena-lib` is `no_std`-compatible by design. Cargo features control which capabilities are compiled in.
+`arena-lib` is `no_std`-compatible by design. Cargo features control which standard-library conveniences are compiled in.
 
 | Feature | Default | Description |
 | ------- | :-----: | ----------- |
-| [`std`](#feature-std) |   yes   | Enables use of `std`. Disable for `no_std` consumers. |
+| [`std`](#feature-std) |   yes   | Enables `std`. Disable for `no_std` consumers. |
 
 <br>
 
 <h3 id="feature-std"><code>std</code></h3>
 
-Enables the standard library. On by default. Disable it when targeting `no_std` environments:
+Enables the standard library. On by default. The crate always requires `alloc` (pulled in automatically) regardless of `std`.
 
 ```toml
+# no_std consumers:
 [dependencies]
-arena-lib = { version = "0.1", default-features = false }
+arena-lib = { version = "0.2", default-features = false }
 ```
-
-Re-enable explicitly:
 
 ```toml
+# explicit re-enable:
 [dependencies]
-arena-lib = { version = "0.1", default-features = false, features = ["std"] }
+arena-lib = { version = "0.2", default-features = false, features = ["std"] }
 ```
 
-When `std` is disabled, the crate compiles under `#![no_std]`. Today the public surface is identical in both modes; this may change as the allocator API lands and certain conveniences require `alloc` or `std`.
+The public surface is identical under both modes today. With `std` enabled, [`Error`](#error) also implements `std::error::Error`.
 
 <br><br>
 
@@ -204,26 +684,23 @@ The crate runs identically on all Tier-1 targets. Platform-specific behavior —
 
 <h2 id="planned-api-surface-10">Planned API Surface (1.0)</h2>
 
-The items below are **not yet implemented**. They define the contract `arena-lib` is being built toward. This list will be replaced by full API documentation as each milestone lands.
+The 0.2 release lands the four core primitives. The items below are the remaining additions and refinements planned before 1.0.
 
-| Area                    | Coming in | Purpose |
-| ----------------------- | :-------: | ------- |
-| Typed arenas            | `0.2.0`   | One backing allocation per element type; predictable layout; cache-friendly traversal. |
-| Generational indices    | `0.2.0`   | Stable handles that detect use-after-free without reference counting. |
-| String interning        | `0.5.0`   | O(1) equality and compact storage for repeated identifiers. |
-| Bump allocation         | `0.5.0`   | Short-lived scratch regions resettable in constant time. |
-| Error type              | `0.2.0`   | Single public error enum covering allocation, exhaustion, and index validation failures. |
-| Benchmarks              | `0.5.0`   | Hot-path microbenchmarks committed under `benches/`. |
-| Hardening + audit       | `0.9.0`   | Feature freeze, REPS audit, doc completeness, cross-platform CI green on stable + MSRV. |
-| Stable 1.0              | `1.0.0`   | Final API freeze, published to crates.io. |
-
-Until the items above land, this document tracks only what ships today.
+| Area | Coming in | Purpose |
+| ---- | :-------: | ------- |
+| Interner hash-backed lookup | `0.5.0` | Switch the interner's lookup map from `BTreeMap` to a hash table for O(1) intern / lookup. |
+| Bump multi-chunk growth | `0.5.0` | Replace the single-chunk `Box<[u8]>` with a linked list of chunks; `alloc` becomes effectively infallible. |
+| Bump typed drop-arena | `0.5.0` | Sibling type that *does* run destructors on reset, for types that require `Drop`. |
+| Arena property tests | `0.5.0` | Exhaustive invariants under randomized operation sequences. |
+| Hot-path benchmarks | `0.5.0` | Criterion benches under `benches/`. |
+| Hardening + audit | `0.9.0` | Feature freeze, REPS audit, doc completeness, cross-platform CI green on stable + MSRV. |
+| Stable 1.0 | `1.0.0` | Final API freeze, published to crates.io. |
 
 <br><br>
 
 <h2 id="notes">Notes</h2>
 
-- **Source of truth.** This document mirrors `src/lib.rs`. If you find a divergence, the source wins — and the divergence is a doc bug worth filing.
+- **Source of truth.** This document mirrors `src/`. If you find a divergence, the source wins — and the divergence is a doc bug worth filing.
 - **Stability.** Every item under [Public APIs](#public-apis) is part of the semver contract from the listed version onward. The crate is pre-1.0; minor releases may still introduce additions, but documented items will not silently change shape.
-- **Safety.** `arena-lib` never exposes `unsafe` in its public surface. Internal `unsafe` blocks carry `// SAFETY:` documentation and are measured against alternatives before being kept.
+- **Safety.** `arena-lib` never exposes `unsafe` in its public surface. The internal `unsafe` blocks (concentrated in the bump arena) carry `// SAFETY:` documentation and are measured against alternatives before being kept.
 - **Reporting issues.** File documentation bugs, missing examples, or API gaps at the [project repository](https://github.com/jamesgober/arena-lib/issues).
