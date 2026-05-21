@@ -8,17 +8,19 @@
 //!
 //! # Cost summary
 //!
-//! - `intern`: O(log n) on a first sight; O(log n) on a repeated sight.
+//! - `intern`: expected O(1) on first sight; expected O(1) on repeated sight.
 //! - `resolve`: O(1).
+//! - `lookup` / `contains`: expected O(1).
 //! - `len` / `is_empty`: O(1).
 //!
-//! The implementation uses an ordered map for the de-duplication index so
-//! that the crate stays `no_std`-compatible without pulling in `hashbrown`.
-//! Hash-backed lookup is planned for the 0.5 milestone.
+//! The implementation uses [`hashbrown::HashMap`] for the de-duplication
+//! index, keeping `intern` / `lookup` at expected O(1) while still
+//! compiling under `no_std`.
 
-use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
+
+use hashbrown::HashMap;
 
 use crate::error::{Error, Result};
 
@@ -62,17 +64,17 @@ impl Symbol {
 /// ```
 pub struct Interner {
     storage: Vec<String>,
-    lookup: BTreeMap<String, u32>,
+    lookup: HashMap<String, u32>,
 }
 
 impl Interner {
     /// Creates an empty interner that performs no allocation up front.
     #[inline]
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             storage: Vec::new(),
-            lookup: BTreeMap::new(),
+            lookup: HashMap::new(),
         }
     }
 
@@ -83,7 +85,7 @@ impl Interner {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             storage: Vec::with_capacity(capacity),
-            lookup: BTreeMap::new(),
+            lookup: HashMap::with_capacity(capacity),
         }
     }
 

@@ -18,7 +18,7 @@
 
 This document is the canonical reference for every public-facing item in the `arena-lib` crate. It tracks the source of truth in `src/` and is updated before every release.
 
-> **Status:** `arena-lib` `0.2.0` ships the **foundation** API surface — generational arena, string interner, bump arena, error type — that the 1.0 release will preserve. Implementations are correct and tested but lean; the 0.5 milestone tunes hot paths, swaps the interner's lookup map to a hash table, and replaces the bump arena's fixed chunk with a growing linked list.
+> **Status:** `arena-lib` `0.5.0` ships the **Implementation** milestone. The interner now uses a hash-backed lookup for O(1) intern / resolve. The bump arena is multi-chunk: `alloc` is effectively infallible. A new [`DropArena<T>`](#drop-arena) provides the same alloc-from-`&self` ergonomics for payloads that need destructors. Property tests cover the arena, interner, and bump invariants; Criterion benchmarks live under `benches/`. The 0.9 milestone takes over for the pre-1.0 hardening pass.
 
 <br>
 
@@ -41,6 +41,8 @@ This document is the canonical reference for every public-facing item in the `ar
     - [`Symbol`](#symbol)
   - [Bump Arena](#bump-arena)
     - [`Bump`](#bump)
+  - [Drop Arena](#drop-arena)
+    - [`DropArena<T>`](#droparena)
   - [Prelude](#prelude)
 - **[Feature Flags](#feature-flags)**
   - [`std`](#feature-std)
@@ -56,7 +58,7 @@ Add `arena-lib` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-arena-lib = "0.2"
+arena-lib = "0.5"
 ```
 
 Or with `cargo`:
@@ -395,13 +397,13 @@ A string interner deduplicates owned string storage: repeated calls with the sam
 
 | Operation | Cost |
 | --------- | :--: |
-| `intern` (first sight) | O(log n) |
-| `intern` (repeat sight) | O(log n) |
+| `intern` (first sight) | expected O(1) |
+| `intern` (repeat sight) | expected O(1) |
 | `resolve` | O(1) |
-| `lookup` / `contains` | O(log n) |
+| `lookup` / `contains` | expected O(1) |
 | `len` / `is_empty` | O(1) |
 
-The 0.2 implementation uses an ordered map (`BTreeMap`) so the crate stays `no_std`-compatible without pulling in `hashbrown`. The 0.5 milestone switches the lookup map to a hash table for O(1) `intern` / `lookup`.
+The 0.5 implementation uses [`hashbrown::HashMap`](https://docs.rs/hashbrown) for the de-duplication index, keeping the crate `no_std`-compatible while delivering O(1) intern and lookup. The `default-hasher` feature of `hashbrown` is enabled, so `Interner::new()` and `Interner::with_capacity(n)` need no caller-supplied hasher.
 
 <br>
 
@@ -411,7 +413,7 @@ The 0.2 implementation uses an ordered map (`BTreeMap`) so the crate stays `no_s
 pub struct Interner;
 
 impl Interner {
-    pub const fn new() -> Self;
+    pub fn new() -> Self;
     pub fn with_capacity(capacity: usize) -> Self;
 
     pub fn len(&self) -> usize;
@@ -432,8 +434,8 @@ The string interner.
 
 **Constructors**
 
-- `new` — empty interner, no allocation until first intern.
-- `with_capacity(n)` — pre-reserves storage for `n` distinct strings.
+- `new` — empty interner; the underlying hash table allocates on first insert.
+- `with_capacity(n)` — pre-reserves both the storage vector and the hash lookup for `n` distinct strings.
 
 **Interning**
 
@@ -502,19 +504,19 @@ Compact 4-byte handle returned by [`Interner::intern`](#interner). Two symbols c
 
 <h3 id="bump-arena">Bump Arena</h3>
 
-A linear allocator for short-lived scratch data. Allocations are O(1) (pointer bump + write); the entire arena clears in O(1) via [`Bump::reset`](#bump). Multiple references handed out from a shared `&self` borrow coexist safely because each allocation hands out a disjoint slice of the chunk.
+A linear allocator for short-lived scratch data, backed by a linked list of chunks. Allocations are O(1) (pointer bump + write); the entire arena clears in O(1) via [`Bump::reset`](#bump). Multiple references handed out from a shared `&self` borrow coexist safely because each allocation hands out a disjoint slice of a chunk.
+
+When a chunk fills, the arena allocates a new one and continues — `alloc` is effectively infallible (it only fails if the global allocator itself fails, just like `Vec::push` or `Box::new`). After `reset`, subsequent allocations refill the existing chunks before any new chunk is requested.
 
 **Cost summary**
 
 | Operation | Cost |
 | --------- | :--: |
-| `alloc` / `try_alloc` | O(1) |
+| `alloc` / `try_alloc` | O(1) (amortised over chunk growth) |
 | `reset` | O(1) |
-| `allocated_bytes` / `chunk_capacity` | O(1) |
+| `allocated_bytes` / `chunk_capacity` / `chunk_count` | O(chunk_count) (typically tiny) |
 
-> **Drop policy.** `Bump` does **not** run destructors when reset or dropped. Allocate types that do not require `Drop` (anything that is `Copy`, or owns only arena-internal memory). The 0.5 milestone introduces a typed drop-arena variant for cases where this is too tight.
->
-> **Growth policy.** 0.2 ships a **single-chunk** allocator: capacity is fixed at construction time and [`Bump::try_alloc`](#bump) returns [`Error::CapacityExceeded`](#error) when full. The 0.5 milestone replaces the internal chunk with a linked list of chunks so that `alloc` becomes effectively infallible.
+> **Drop policy.** `Bump` does **not** run destructors when reset or dropped. Allocate types that do not require `Drop` (anything that is `Copy`, or owns only arena-internal memory). For payloads that own resources, use [`DropArena<T>`](#droparena).
 
 <br>
 
@@ -528,6 +530,7 @@ impl Bump {
     pub fn with_capacity(capacity: usize) -> Self;
 
     pub fn chunk_capacity(&self) -> usize;
+    pub fn chunk_count(&self) -> usize;
     pub fn allocated_bytes(&self) -> usize;
 
     pub fn alloc<T>(&self, value: T) -> &mut T;
@@ -537,24 +540,25 @@ impl Bump {
 }
 ```
 
-Single-chunk bump arena.
+Multi-chunk bump arena.
 
 **Constructors**
 
-- `new` — empty arena that can satisfy only zero-sized allocations. Use [`Bump::with_capacity`](#bump) for any non-trivial use.
-- `with_capacity(n)` — backed by a fixed-size chunk of `n` bytes. Account for alignment padding in addition to raw value size.
+- `new` — empty arena; the first allocation triggers the allocation of an initial chunk (default size 4 KiB).
+- `with_capacity(n)` — pre-allocates an initial chunk of `n` bytes. Subsequent chunks (if needed) are at least `n` bytes with a floor of 4 KiB.
 
 **Allocation**
 
-- `alloc(value)` — pointer bump + write, returning `&mut T` tied to `&self`. Panics if the chunk does not have room for `value`.
+- `alloc(value)` — pointer bump + write, returning `&mut T` tied to `&self`. Allocates a new chunk if needed. Panics only if the global allocator fails.
 - `try_alloc(value)` — explicit fallible variant returning `Result<&mut T>`.
 
-The returned `&mut T` borrows from `&self`: [`Bump`](#bump) owns the underlying chunk and hands out disjoint regions per call, so multiple `&mut T` from the same `&Bump` coexist without aliasing. This matches `bumpalo::Bump::alloc`.
+The returned `&mut T` borrows from `&self`: [`Bump`](#bump) owns the underlying chunks and hands out disjoint regions per call, so multiple `&mut T` from the same `&Bump` coexist without aliasing. This matches `bumpalo::Bump::alloc`.
 
 **Inspection**
 
-- `chunk_capacity()` — total bytes in the underlying chunk.
-- `allocated_bytes()` — bytes consumed since the most recent `reset` (or since construction). Includes alignment padding.
+- `chunk_capacity()` — total bytes reserved across every chunk currently held.
+- `chunk_count()` — number of chunks currently held. Grows when allocation forces a new chunk; `reset` does **not** reduce it.
+- `allocated_bytes()` — bytes consumed since the most recent `reset` (or since construction). Includes alignment padding and fully-used capacity of any chunks before the current cursor.
 
 **Reset**
 
@@ -562,7 +566,7 @@ The returned `&mut T` borrows from `&self`: [`Bump`](#bump) owns the underlying 
 
 **Threading**
 
-`Bump` is `Send` (it owns a `Box<[u8]>`) but **not** `Sync` — concurrent `&self` allocation across threads is rejected at compile time. Use one `Bump` per thread, or wrap in `Arc<Mutex<Bump>>` if you must share.
+`Bump` is `Send` (it owns its chunks) but **not** `Sync` — concurrent `&self` allocation across threads is rejected at compile time. Use one `Bump` per thread, or wrap in `Arc<Mutex<Bump>>` if you must share.
 
 **Trait impls:** `Default`, `Debug`.
 
@@ -594,18 +598,102 @@ let n = bump.alloc(0xdead_beef_u32);     // padded for u32 alignment
 assert_eq!(*n, 0xdead_beef);
 ```
 
-Explicit error handling at capacity:
+Growth across chunks (no explicit error to handle, but observable through `chunk_count`):
 
 ```rust
-use arena_lib::{Bump, Error};
+use arena_lib::Bump;
 
-let bump = Bump::with_capacity(4);
-let _ = bump.alloc(1_u32);
-match bump.try_alloc(2_u32) {
-    Ok(_) => unreachable!(),
-    Err(Error::CapacityExceeded) => { /* expected */ }
-    Err(other) => panic!("unexpected: {other:?}"),
+let bump = Bump::with_capacity(8);
+let _ = bump.alloc([0_u8; 8]);          // fills the initial chunk
+let chunks_before = bump.chunk_count();
+let n = bump.alloc(42_u32);              // forces a new chunk
+assert_eq!(*n, 42);
+assert!(bump.chunk_count() > chunks_before);
+```
+
+<br><br>
+
+<h3 id="drop-arena">Drop Arena</h3>
+
+The drop-honouring sibling of [`Bump`](#bump). Both hand out `&mut T` from a shared `&self` borrow at O(1) cost, but `DropArena<T>` parks every value inside a `Vec<T>` chunk so that `T`'s destructor runs when the arena (or the chunk holding the value) is dropped. Reach for `DropArena` when payloads own resources — boxed data, file handles, mutexes — and you cannot leak on reset.
+
+**Cost summary**
+
+| Operation | Cost |
+| --------- | :--: |
+| `alloc` | amortised O(1) |
+| `len` / `is_empty` / `chunk_count` | O(chunk_count) (typically tiny) |
+
+<br>
+
+<h4 id="droparena"><code>DropArena&lt;T&gt;</code></h4>
+
+```rust
+pub struct DropArena<T>;
+
+impl<T> DropArena<T> {
+    pub fn new() -> Self;
+    pub fn with_chunk_capacity(chunk_capacity: usize) -> Self;
+
+    pub fn len(&self) -> usize;
+    pub fn is_empty(&self) -> bool;
+    pub fn chunk_count(&self) -> usize;
+
+    pub fn alloc(&self, value: T) -> &mut T;
 }
+```
+
+Typed drop-honouring arena.
+
+**Constructors**
+
+- `new` — empty arena; the first allocation triggers an initial chunk holding 16 `T` slots.
+- `with_chunk_capacity(n)` — empty arena whose chunks each hold `n` `T` slots. A zero is silently clamped to 1.
+
+**Allocation**
+
+- `alloc(value)` — moves `value` into the current chunk's spare capacity. Allocates a new chunk if needed. Panics only if the global allocator fails. Returns `&mut T` tied to `&self`.
+
+The chunk layout — a `Vec<Vec<T>>` where each inner `Vec` is filled by direct writes into its spare capacity — means inner `Vec` buffers are never reallocated once issued, so handed-out references remain valid for the lifetime of `&self`. Outer `Vec` reallocations move inner `Vec` headers but not their heap buffers.
+
+**Threading**
+
+`DropArena<T>` is `Send` when `T: Send`, never `Sync`. Use one arena per thread.
+
+**No `reset`.** Destructors are honoured only via `Drop`. Dropping the arena (or letting it go out of scope) runs every `T`'s destructor exactly once. There is no in-place reset because that would require dropping every live value while outstanding `&mut T` borrows are still in scope, which the borrow checker cannot model safely.
+
+**Trait impls:** `Default`, `Debug` (where `T: Debug`).
+
+**Examples**
+
+Owned `String` payloads — drop frees the heap buffers when the arena dies:
+
+```rust
+use arena_lib::DropArena;
+
+let arena = DropArena::<String>::new();
+let s1 = arena.alloc(String::from("alpha"));
+let s2 = arena.alloc(String::from("bravo"));
+assert_eq!(s1, "alpha");
+assert_eq!(s2, "bravo");
+assert_eq!(arena.len(), 2);
+// `arena` drops here; both String heaps are freed.
+```
+
+Shared ownership — confirm destructors actually run:
+
+```rust
+use arena_lib::DropArena;
+use std::sync::Arc;
+
+let shared = Arc::new(0_u32);
+{
+    let arena = DropArena::<Arc<u32>>::new();
+    let _ = arena.alloc(Arc::clone(&shared));
+    let _ = arena.alloc(Arc::clone(&shared));
+    assert_eq!(Arc::strong_count(&shared), 3);
+}
+assert_eq!(Arc::strong_count(&shared), 1); // arena dropped; clones gone.
 ```
 
 <br><br>
@@ -616,6 +704,7 @@ match bump.try_alloc(2_u32) {
 pub mod prelude {
     pub use crate::arena::{Arena, Index};
     pub use crate::bump::Bump;
+    pub use crate::drop_arena::DropArena;
     pub use crate::error::{Error, Result};
     pub use crate::intern::{Interner, Symbol};
 }
@@ -684,16 +773,14 @@ The crate runs identically on all Tier-1 targets. Platform-specific behavior —
 
 <h2 id="planned-api-surface-10">Planned API Surface (1.0)</h2>
 
-The 0.2 release lands the four core primitives. The items below are the remaining additions and refinements planned before 1.0.
+`0.5.0` lands the implementation milestone — every item already documented above is fully realised. The items below are the remaining refinements planned before 1.0.
 
 | Area | Coming in | Purpose |
 | ---- | :-------: | ------- |
-| Interner hash-backed lookup | `0.5.0` | Switch the interner's lookup map from `BTreeMap` to a hash table for O(1) intern / lookup. |
-| Bump multi-chunk growth | `0.5.0` | Replace the single-chunk `Box<[u8]>` with a linked list of chunks; `alloc` becomes effectively infallible. |
-| Bump typed drop-arena | `0.5.0` | Sibling type that *does* run destructors on reset, for types that require `Drop`. |
-| Arena property tests | `0.5.0` | Exhaustive invariants under randomized operation sequences. |
-| Hot-path benchmarks | `0.5.0` | Criterion benches under `benches/`. |
-| Hardening + audit | `0.9.0` | Feature freeze, REPS audit, doc completeness, cross-platform CI green on stable + MSRV. |
+| Arena `Iter::ExactSizeIterator` impl | `0.9.0` | Cheap `len()` and `size_hint` on iterators. |
+| Bump `iter_chunks` for diagnostics | `0.9.0` | Read-only view over each chunk's used range. |
+| `Interner` reservation hint for lookup map | `0.9.0` | Expose `reserve(additional)` to mirror `Arena::reserve`. |
+| Pre-1.0 hardening + audit | `0.9.0` | Feature freeze, REPS audit, doc completeness, cross-platform CI green on stable + MSRV. |
 | Stable 1.0 | `1.0.0` | Final API freeze, published to crates.io. |
 
 <br><br>

@@ -19,6 +19,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.0] - 2026-05-21
+
+### Added
+
+- `DropArena<T>` — typed bump-style arena that runs destructors on drop. Multi-chunk internally, alloc-from-`&self`, `Send` when `T: Send`.
+- Property-based tests under `tests/properties.rs` (proptest) covering arena handle invariants, interner idempotency, and bump round-trips.
+- Criterion benchmarks under `benches/arena.rs`, `benches/intern.rs`, `benches/bump.rs` exercising insert / get / churn for the arena, unique / repeated intern + resolve for the interner, and alloc / reset for the bump.
+- `Bump::chunk_count()` accessor for diagnostics.
+
+### Changed
+
+- **Interner** switched from `alloc::collections::BTreeMap` to `hashbrown::HashMap` for the de-duplication index. `intern`, `lookup`, and `contains` are now expected O(1). `Interner::new()` and `Interner::with_capacity` are no longer `const` (hashbrown's `HashMap::new` is not `const`).
+- **Bump** is now a multi-chunk linear allocator. `alloc` and `try_alloc` allocate a new chunk on demand and are effectively infallible — `try_alloc` returns `Err(Error::CapacityExceeded)` only when the global allocator itself fails. `Bump::with_capacity(n)` pre-allocates an initial chunk; subsequent chunks default to `max(n, 4 KiB)`. After `reset`, existing chunks are retained and refilled before any new chunk is requested. `Bump::chunk_capacity()` now returns the total bytes across all chunks (previously: the single chunk's bytes).
+- Added `hashbrown 0.15` (default features off, `default-hasher` + `inline-more`) as a runtime dependency.
+- Added `criterion 0.5` and `proptest 1` as dev-dependencies.
+
+---
+
 ## [0.2.0] - 2026-05-21
 
 ### Added
@@ -47,6 +65,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - REPS compliance baseline.
 - CI for Linux/macOS/Windows on stable and MSRV (1.85).
 
-[Unreleased]: https://github.com/jamesgober/arena-lib/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/jamesgober/arena-lib/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/jamesgober/arena-lib/compare/v0.2.0...v0.5.0
 [0.2.0]: https://github.com/jamesgober/arena-lib/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jamesgober/arena-lib/releases/tag/v0.1.0

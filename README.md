@@ -31,7 +31,7 @@ Designed around four guarantees:
 
 Every public path is safe Rust. `unsafe` lives only in measured, documented internals — never in your call sites.
 
-> **Status:** v0.2.0 (Foundation). The four core primitives — generational arena, string interner, bump arena, and the shared `Error` type — are live and tested. The 1.0 contract is in place; the 0.5 milestone tunes hot paths and grows the bump arena to multi-chunk.
+> **Status:** v0.5.0 (Implementation). Interner backed by [`hashbrown`](https://docs.rs/hashbrown) for O(1) intern. Bump arena is multi-chunk: `alloc` is effectively infallible. New `DropArena<T>` runs destructors. Property tests cover the arena, interner, and bump invariants; Criterion benches live under `benches/`. The 0.9 milestone takes over for the pre-1.0 hardening pass.
 
 ---
 
@@ -41,7 +41,7 @@ Add the crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-arena-lib = "0.2"
+arena-lib = "0.5"
 ```
 
 End-to-end use of every primitive:
@@ -62,10 +62,15 @@ fn main() {
     let id_b = interner.intern("user:alice");
     assert_eq!(id_a, id_b);
 
-    // Bump arena — fast scratch, reset in O(1).
+    // Bump arena — fast scratch, grows on demand, O(1) reset.
     let bump = Bump::with_capacity(64);
     let scratch = bump.alloc([0_u8; 16]);
     assert_eq!(scratch.len(), 16);
+
+    // Drop arena — same ergonomics but runs destructors on drop.
+    let owned = DropArena::<String>::new();
+    let s = owned.alloc(String::from("freed when `owned` is dropped"));
+    assert!(s.contains("dropped"));
 
     // Removing a slot invalidates its handle without touching the rest.
     assert_eq!(arena.remove(alice), Some("alice"));

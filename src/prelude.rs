@@ -16,5 +16,6 @@
 
 pub use crate::arena::{Arena, Index};
 pub use crate::bump::Bump;
+pub use crate::drop_arena::DropArena;
 pub use crate::error::{Error, Result};
 pub use crate::intern::{Interner, Symbol};

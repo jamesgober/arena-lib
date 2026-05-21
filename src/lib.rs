@@ -40,7 +40,8 @@
 //!
 //! - [`arena`] — generational arena and [`Index`] handle.
 //! - [`intern`] — string interner and [`Symbol`] handle.
-//! - [`bump`] — bump arena for short-lived scratch.
+//! - [`bump`] — multi-chunk bump arena for short-lived scratch (no drop).
+//! - [`drop_arena`] — typed bump-style arena that runs destructors.
 //! - [`error`] — single public [`Error`] type and [`Result`] alias.
 //! - [`prelude`] — convenience re-exports for downstream crates.
 //!
@@ -74,12 +75,14 @@ extern crate alloc;
 
 pub mod arena;
 pub mod bump;
+pub mod drop_arena;
 pub mod error;
 pub mod intern;
 pub mod prelude;
 
 pub use crate::arena::{Arena, Index};
 pub use crate::bump::Bump;
+pub use crate::drop_arena::DropArena;
 pub use crate::error::{Error, Result};
 pub use crate::intern::{Interner, Symbol};
 

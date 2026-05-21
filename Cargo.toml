@@ -1,6 +1,6 @@
-﻿[package]
+[package]
 name = "arena-lib"
-version = "0.2.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.85"
 readme = "README.md"
@@ -42,8 +42,23 @@ default = ["std"]
 std = []
 
 [dependencies]
+hashbrown = { version = "0.15", default-features = false, features = ["default-hasher", "inline-more"] }
 
 [dev-dependencies]
+criterion = { version = "0.5", default-features = false }
+proptest = { version = "1", default-features = false, features = ["std"] }
+
+[[bench]]
+name = "arena"
+harness = false
+
+[[bench]]
+name = "intern"
+harness = false
+
+[[bench]]
+name = "bump"
+harness = false
 
 [profile.release]
 opt-level = 3
