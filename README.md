@@ -31,7 +31,7 @@ Designed around four guarantees:
 
 Every public path is safe Rust. `unsafe` lives only in measured, documented internals — never in your call sites.
 
-> **Status:** v0.5.0 (Implementation). Interner backed by [`hashbrown`](https://docs.rs/hashbrown) for O(1) intern. Bump arena is multi-chunk: `alloc` is effectively infallible. New `DropArena<T>` runs destructors. Property tests cover the arena, interner, and bump invariants; Criterion benches live under `benches/`. The 0.9 milestone takes over for the pre-1.0 hardening pass.
+> **Status:** v0.9.0 (Hardening + Audit). The 0.5 surface is feature-frozen; every public item carries a documented example, property tests cover the arena, interner, bump, and drop-arena invariants, and a runnable `examples/quick_start.rs` exercises all four primitives end-to-end. Audit findings are logged in [docs/release/v0.9.0.md](docs/release/v0.9.0.md). Next release is the 1.0 freeze.
 
 ---
 
@@ -41,7 +41,7 @@ Add the crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-arena-lib = "0.5"
+arena-lib = "0.9"
 ```
 
 End-to-end use of every primitive:

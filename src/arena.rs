@@ -226,6 +226,22 @@ impl<T> Arena<T> {
 
     /// Removes the element behind `idx` and returns it, or `None` if the
     /// handle is stale.
+    ///
+    /// The slot's generation counter advances so the consumed handle —
+    /// and any other handle previously issued for the same slot — never
+    /// resolves again, even if the slot is reused by a later `insert`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use arena_lib::Arena;
+    ///
+    /// let mut arena = Arena::new();
+    /// let h = arena.insert("payload");
+    ///
+    /// assert_eq!(arena.remove(h), Some("payload"));
+    /// assert_eq!(arena.remove(h), None); // stale on every subsequent call
+    /// ```
     pub fn remove(&mut self, idx: Index) -> Option<T> {
         let slot = self.slots.get_mut(idx.slot as usize)?;
         if slot.generation != idx.generation {
@@ -272,6 +288,24 @@ impl<T> Arena<T> {
     }
 
     /// Returns an iterator over `(Index, &T)` for every live element.
+    ///
+    /// Vacant slots are skipped; iteration order follows slot indices,
+    /// which is *not* the insertion order if any removals have happened.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use arena_lib::Arena;
+    ///
+    /// let mut arena = Arena::new();
+    /// let _a = arena.insert("alpha");
+    /// let killed = arena.insert("dead");
+    /// let _b = arena.insert("bravo");
+    /// arena.remove(killed);
+    ///
+    /// let live: Vec<&&str> = arena.iter().map(|(_idx, value)| value).collect();
+    /// assert_eq!(live, vec![&"alpha", &"bravo"]);
+    /// ```
     #[inline]
     pub fn iter(&self) -> Iter<'_, T> {
         Iter {

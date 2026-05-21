@@ -9,8 +9,10 @@
 //! - **Bump**: alloc-then-read round-trips for any sequence of values;
 //!   the cursor only ever advances.
 
-use arena_lib::{Arena, Bump, Interner};
+use arena_lib::{Arena, Bump, DropArena, Interner};
 use proptest::prelude::*;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 proptest! {
     #![proptest_config(ProptestConfig {
@@ -135,5 +137,51 @@ proptest! {
             prop_assert!(current >= prev, "allocated_bytes must be monotonic");
             prev = current;
         }
+    }
+
+    /// Every value parked in a `DropArena<T>` reads back identically while
+    /// the arena is alive, regardless of chunk-growth events.
+    #[test]
+    fn drop_arena_alloc_round_trips(
+        chunk_cap in 1_usize..32,
+        values in prop::collection::vec(any::<u64>(), 0..200),
+    ) {
+        let arena = DropArena::<u64>::with_chunk_capacity(chunk_cap);
+        let mut refs: Vec<(*const u64, u64)> = Vec::with_capacity(values.len());
+        for v in &values {
+            let r: *const u64 = arena.alloc(*v);
+            refs.push((r, *v));
+        }
+        // Every prior reference is still valid after subsequent allocations.
+        for (ptr, expected) in refs {
+            // SAFETY: each `ptr` came from `arena.alloc`; the chunk owning
+            // it is still alive because `arena` has not been dropped.
+            let observed = unsafe { *ptr };
+            prop_assert_eq!(observed, expected);
+        }
+        prop_assert_eq!(arena.len(), values.len());
+    }
+
+    /// Dropping a `DropArena<Arc<_>>` runs every stored clone's
+    /// destructor exactly once.
+    #[test]
+    fn drop_arena_runs_destructors(count in 0_usize..50) {
+        let counter = Arc::new(AtomicUsize::new(0));
+        struct Tracked(Arc<AtomicUsize>);
+        impl Drop for Tracked {
+            fn drop(&mut self) {
+                let _ = self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        {
+            let arena = DropArena::<Tracked>::new();
+            for _ in 0..count {
+                let _ = arena.alloc(Tracked(Arc::clone(&counter)));
+            }
+            prop_assert_eq!(counter.load(Ordering::SeqCst), 0);
+            // arena drops here
+        }
+        prop_assert_eq!(counter.load(Ordering::SeqCst), count);
     }
 }

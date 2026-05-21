@@ -58,6 +58,21 @@ impl<T> DropArena<T> {
     /// `T` slots.
     ///
     /// A `chunk_capacity` of zero is silently clamped to 1.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use arena_lib::DropArena;
+    ///
+    /// // Tightly-sized chunks — every alloc beyond the 4th opens a new chunk.
+    /// let arena = DropArena::<u32>::with_chunk_capacity(4);
+    /// for i in 0..4 {
+    ///     let _ = arena.alloc(i);
+    /// }
+    /// assert_eq!(arena.chunk_count(), 1);
+    /// let _ = arena.alloc(99);
+    /// assert_eq!(arena.chunk_count(), 2);
+    /// ```
     #[inline]
     #[must_use]
     pub fn with_chunk_capacity(chunk_capacity: usize) -> Self {

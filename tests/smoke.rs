@@ -1,4 +1,4 @@
-//! End-to-end smoke test covering every public primitive in the 0.2 surface.
+//! End-to-end smoke test covering every public primitive together.
 
 use arena_lib::prelude::*;
 
@@ -17,7 +17,7 @@ fn end_to_end_workflow() {
     let mut interner = Interner::with_capacity(8);
 
     // 3) Build a bump arena for the per-frame scratch buffers we cite
-    //    in each session record.
+    //    from each session record.
     let bump = Bump::with_capacity(256);
 
     let alice_id = interner.intern("user:alice");
@@ -30,23 +30,33 @@ fn end_to_end_workflow() {
 
     let alice_buf: &mut [u8; 4] = bump.alloc([1, 2, 3, 4]);
     let bob_buf: &mut [u8; 4] = bump.alloc([5, 6, 7, 8]);
+    let alice_addr = alice_buf.as_ptr() as usize;
+    let bob_addr = bob_buf.as_ptr() as usize;
+
+    // Sanity-check the bump-allocator property: two consecutive
+    // 4-byte allocations land in adjacent slots of the same chunk.
+    assert_eq!(
+        bob_addr - alice_addr,
+        core::mem::size_of_val(alice_buf),
+        "bump must place sequential allocations contiguously"
+    );
 
     let alice = arena.insert(Session {
         user: alice_id,
-        scratch_start: alice_buf.as_ptr() as usize,
+        scratch_start: alice_addr,
     });
     let bob = arena.insert(Session {
         user: bob_id,
-        scratch_start: bob_buf.as_ptr() as usize,
+        scratch_start: bob_addr,
     });
 
     // 4) The arena resolves both handles and yields the original session
     //    payloads.
     assert_eq!(arena.len(), 2);
-    let resolved_alice = arena.get(alice).map(|s| s.user);
-    let resolved_bob = arena.get(bob).map(|s| s.user);
-    assert_eq!(resolved_alice, Some(alice_id));
-    assert_eq!(resolved_bob, Some(bob_id));
+    let resolved_alice = arena.get(alice).map(|s| (s.user, s.scratch_start));
+    let resolved_bob = arena.get(bob).map(|s| (s.user, s.scratch_start));
+    assert_eq!(resolved_alice, Some((alice_id, alice_addr)));
+    assert_eq!(resolved_bob, Some((bob_id, bob_addr)));
 
     // 5) Removing alice invalidates her handle but leaves bob intact.
     let removed = arena
@@ -73,6 +83,5 @@ fn end_to_end_workflow() {
 
 struct Session {
     user: Symbol,
-    #[allow(dead_code)]
     scratch_start: usize,
 }

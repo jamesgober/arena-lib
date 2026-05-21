@@ -18,7 +18,7 @@
 
 This document is the canonical reference for every public-facing item in the `arena-lib` crate. It tracks the source of truth in `src/` and is updated before every release.
 
-> **Status:** `arena-lib` `0.5.0` ships the **Implementation** milestone. The interner now uses a hash-backed lookup for O(1) intern / resolve. The bump arena is multi-chunk: `alloc` is effectively infallible. A new [`DropArena<T>`](#drop-arena) provides the same alloc-from-`&self` ergonomics for payloads that need destructors. Property tests cover the arena, interner, and bump invariants; Criterion benchmarks live under `benches/`. The 0.9 milestone takes over for the pre-1.0 hardening pass.
+> **Status:** `arena-lib` `0.9.0` ships the **Hardening + Audit** milestone. The 0.5 surface is feature-frozen; every public item carries a documented example, property tests cover the arena, interner, bump, and drop-arena invariants, and a runnable `examples/quick_start.rs` exercises all four primitives end-to-end. Audit findings are logged in [docs/release/v0.9.0.md](./release/v0.9.0.md). The next release is the 1.0 freeze.
 
 <br>
 
@@ -58,7 +58,7 @@ Add `arena-lib` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-arena-lib = "0.5"
+arena-lib = "0.9"
 ```
 
 Or with `cargo`:
@@ -498,7 +498,9 @@ impl Symbol {
 }
 ```
 
-Compact 4-byte handle returned by [`Interner::intern`](#interner). Two symbols compare equal if and only if the strings they refer to were interned by the **same** [`Interner`](#interner) from byte-identical inputs. Symbols are not transferable across interners.
+Compact 4-byte handle returned by [`Interner::intern`](#interner). **Within a single interner**, two symbols compare equal if and only if the strings they refer to were interned from byte-identical inputs.
+
+Symbols are scoped to the [`Interner`](#interner) that issued them: id values collide across separate interners (both start at 0, etc.). Passing a foreign symbol to [`Interner::resolve`](#interner) is undefined at the API contract level — the call may return `None`, or it may return an unrelated string. Treat `Symbol` values as opaque handles tied to a single interner.
 
 <br><br>
 
@@ -773,15 +775,13 @@ The crate runs identically on all Tier-1 targets. Platform-specific behavior —
 
 <h2 id="planned-api-surface-10">Planned API Surface (1.0)</h2>
 
-`0.5.0` lands the implementation milestone — every item already documented above is fully realised. The items below are the remaining refinements planned before 1.0.
+`0.9.0` is the **feature freeze**. The surface documented above is what 1.0 ships — no new public types, methods, or error variants are planned. The only remaining work is the final 1.0 release:
 
 | Area | Coming in | Purpose |
 | ---- | :-------: | ------- |
-| Arena `Iter::ExactSizeIterator` impl | `0.9.0` | Cheap `len()` and `size_hint` on iterators. |
-| Bump `iter_chunks` for diagnostics | `0.9.0` | Read-only view over each chunk's used range. |
-| `Interner` reservation hint for lookup map | `0.9.0` | Expose `reserve(additional)` to mirror `Arena::reserve`. |
-| Pre-1.0 hardening + audit | `0.9.0` | Feature freeze, REPS audit, doc completeness, cross-platform CI green on stable + MSRV. |
-| Stable 1.0 | `1.0.0` | Final API freeze, published to crates.io. |
+| Stable 1.0 | `1.0.0` | Final API freeze (no surface changes from 0.9). Published to crates.io. |
+
+If a 1.x release later adds capabilities, they will be **purely additive** — new methods on existing types, new variants on the `#[non_exhaustive]` `Error` enum, or new types in their own modules. Anything that would break a 0.9-using caller is out of scope until a hypothetical 2.0.
 
 <br><br>
 

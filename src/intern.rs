@@ -26,10 +26,16 @@ use crate::error::{Error, Result};
 
 /// Compact handle returned by [`Interner::intern`].
 ///
-/// A `Symbol` is a 4-byte `Copy` value. Two symbols compare equal if and
-/// only if the strings they refer to were interned by the **same**
-/// [`Interner`] from byte-identical inputs. Symbols are not transferable
-/// across interners.
+/// A `Symbol` is a 4-byte `Copy` value. **Within a single interner**, two
+/// symbols compare equal if and only if the strings they refer to were
+/// interned from byte-identical inputs.
+///
+/// Symbols are scoped to the [`Interner`] that issued them: id values
+/// collide across separate interners (both start at 0, etc.). Passing a
+/// foreign symbol to [`Interner::resolve`] is undefined at the API
+/// contract level — the call may return `None`, or it may return an
+/// unrelated string. Treat `Symbol` values as opaque handles tied to a
+/// single interner.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Symbol(u32);
 
@@ -133,8 +139,25 @@ impl Interner {
         Ok(Symbol(id))
     }
 
-    /// Returns the original string for `symbol`, or `None` if the symbol
-    /// did not come from this interner.
+    /// Returns the original string for `symbol`, or `None` if the
+    /// symbol's id is out of range for this interner.
+    ///
+    /// Passing a symbol issued by a *different* interner is undefined
+    /// behaviour at the API contract level: the call may return `None`
+    /// (if the foreign id is past this interner's length) or it may
+    /// return some unrelated string (if the foreign id collides with an
+    /// in-range local id). Treat [`Symbol`] values as opaque handles
+    /// scoped to the [`Interner`] that issued them.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use arena_lib::Interner;
+    ///
+    /// let mut interner = Interner::new();
+    /// let sym = interner.intern("payload");
+    /// assert_eq!(interner.resolve(sym), Some("payload"));
+    /// ```
     #[inline]
     #[must_use]
     pub fn resolve(&self, symbol: Symbol) -> Option<&str> {
@@ -152,6 +175,23 @@ impl Interner {
 
     /// Returns the symbol previously assigned to `s`, without inserting
     /// a new entry if the string is unknown.
+    ///
+    /// Use this when you want to *probe* the interner without growing
+    /// it — for example, to enforce that only pre-registered identifiers
+    /// are accepted.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use arena_lib::Interner;
+    ///
+    /// let mut interner = Interner::new();
+    /// let known = interner.intern("known");
+    ///
+    /// assert_eq!(interner.lookup("known"), Some(known));
+    /// assert_eq!(interner.lookup("unknown"), None);
+    /// assert_eq!(interner.len(), 1, "lookup must not insert");
+    /// ```
     #[inline]
     #[must_use]
     pub fn lookup(&self, s: &str) -> Option<Symbol> {

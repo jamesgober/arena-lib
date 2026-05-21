@@ -19,6 +19,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.0] - 2026-05-21
+
+Pre-1.0 hardening + audit. Feature freeze. The 0.5 public surface is preserved exactly; this release closes documentation, test, and example gaps and logs the audit findings.
+
+### Added
+
+- `examples/quick_start.rs` — runnable end-to-end tour of all four primitives. Invoke with `cargo run --example quick_start`.
+- `tests/error.rs` — audit-grade coverage of every `Error` variant: non-empty `Display` output, `std::error::Error` wiring, equality semantics, and a live `StaleIndex` round-trip via the public API.
+- Property tests for `DropArena`: alloc round-trip across chunk-growth events; `Drop` runs destructors exactly once per value parked into the arena.
+- Method-level rustdoc examples on every non-trivial public method (`Arena::remove`, `Arena::iter`, `Interner::resolve`, `Interner::lookup`, `Bump::try_alloc`, `Bump::reset`, `DropArena::with_chunk_capacity`).
+
+### Changed
+
+- `Symbol` and `Interner::resolve` docstrings tightened: clarified that symbols are *opaque handles tied to a single interner*; passing a foreign symbol to `resolve` is undefined at the API contract level (may return `None` or an unrelated string), not enforced.
+- Cleaned `tests/smoke.rs`: removed `#[allow(dead_code)]` on the `scratch_start` field by adding an assertion that proves the bump-allocator's contiguous-allocation property.
+
+### Verified
+
+- Feature freeze — no public type, method, or error variant added or removed since 0.5.
+- Code cleanliness — no `TODO` / `FIXME` / `HACK` markers in `src/`; every `#[allow(...)]` carries a `reason = "..."` justification.
+- Tests — 59 passing (27 unit + 9 property + 4 error + 2 smoke + 17 doctest).
+- Benches — all four benchmark binaries compile.
+- Docs — `cargo doc --no-deps --all-features` and `cargo doc --no-deps` both clean with `RUSTDOCFLAGS=-D warnings`.
+
+---
+
 ## [0.5.0] - 2026-05-21
 
 ### Added
@@ -65,7 +91,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - REPS compliance baseline.
 - CI for Linux/macOS/Windows on stable and MSRV (1.85).
 
-[Unreleased]: https://github.com/jamesgober/arena-lib/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/jamesgober/arena-lib/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/jamesgober/arena-lib/compare/v0.5.0...v0.9.0
 [0.5.0]: https://github.com/jamesgober/arena-lib/compare/v0.2.0...v0.5.0
 [0.2.0]: https://github.com/jamesgober/arena-lib/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jamesgober/arena-lib/releases/tag/v0.1.0

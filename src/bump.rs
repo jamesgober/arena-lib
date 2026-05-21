@@ -191,6 +191,16 @@ impl Bump {
     /// The returned `&mut T` borrows from `&self` because the [`Bump`]
     /// owns the underlying chunks and hands out non-overlapping regions
     /// per call — the same pattern used by `bumpalo::Bump::alloc`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use arena_lib::Bump;
+    ///
+    /// let bump = Bump::with_capacity(16);
+    /// let r = bump.try_alloc(0xfeed_u32).expect("global allocator should be live");
+    /// assert_eq!(*r, 0xfeed);
+    /// ```
     #[allow(
         clippy::mut_from_ref,
         reason = "interior mutability via UnsafeCell; each call returns a disjoint region of the chunk"
@@ -219,6 +229,20 @@ impl Bump {
     /// the global allocator. Destructors are **not** run (see the
     /// [module-level docs](self) for the Drop policy). Taking `&mut self`
     /// ensures no outstanding references survive across the call.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use arena_lib::Bump;
+    ///
+    /// let mut bump = Bump::with_capacity(64);
+    /// let _ = bump.alloc([0_u8; 32]);
+    /// let chunks_before = bump.chunk_count();
+    ///
+    /// bump.reset();
+    /// assert_eq!(bump.allocated_bytes(), 0);
+    /// assert_eq!(bump.chunk_count(), chunks_before, "reset retains chunks");
+    /// ```
     #[inline]
     pub fn reset(&mut self) {
         // SAFETY: `&mut self` excludes any outstanding `&T` / `&mut T`
