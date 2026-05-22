@@ -19,6 +19,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.0] - 2026-05-21
+
+First stable release. **No public surface changes** since 0.9.0 — this release tags the audited 0.9 surface as the frozen 1.0 contract.
+
+### Changed
+
+- Version bumped to `1.0.0`. Within the 1.x line, changes are constrained to be purely additive (new methods on existing types, new variants on the `#[non_exhaustive]` `Error` enum, new types in new modules).
+- README and `docs/API.md` quick-start dependency snippet updated from `"0.9"` to `"1"`.
+- Status callouts in README and `docs/API.md` updated to reflect stable status; `docs/API.md` "Planned API Surface (1.0)" section renamed to **API Stability (1.x)** and rewritten as the stability contract.
+
+---
+
 ## [0.9.0] - 2026-05-21
 
 Pre-1.0 hardening + audit. Feature freeze. The 0.5 public surface is preserved exactly; this release closes documentation, test, and example gaps and logs the audit findings.
@@ -91,7 +103,8 @@ Pre-1.0 hardening + audit. Feature freeze. The 0.5 public surface is preserved e
 - REPS compliance baseline.
 - CI for Linux/macOS/Windows on stable and MSRV (1.85).
 
-[Unreleased]: https://github.com/jamesgober/arena-lib/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/jamesgober/arena-lib/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/jamesgober/arena-lib/compare/v0.9.0...v1.0.0
 [0.9.0]: https://github.com/jamesgober/arena-lib/compare/v0.5.0...v0.9.0
 [0.5.0]: https://github.com/jamesgober/arena-lib/compare/v0.2.0...v0.5.0
 [0.2.0]: https://github.com/jamesgober/arena-lib/compare/v0.1.0...v0.2.0

@@ -31,7 +31,7 @@ Designed around four guarantees:
 
 Every public path is safe Rust. `unsafe` lives only in measured, documented internals — never in your call sites.
 
-> **Status:** v0.9.0 (Hardening + Audit). The 0.5 surface is feature-frozen; every public item carries a documented example, property tests cover the arena, interner, bump, and drop-arena invariants, and a runnable `examples/quick_start.rs` exercises all four primitives end-to-end. Audit findings are logged in [docs/release/v0.9.0.md](docs/release/v0.9.0.md). Next release is the 1.0 freeze.
+> **Status:** v1.0.0 — **stable**. API frozen. Within the 1.x line, only purely additive changes are permitted (new methods on existing types, new variants on the `#[non_exhaustive]` `Error` enum). Anything that would break a 1.x caller is out of scope until a hypothetical 2.0.
 
 ---
 
@@ -41,7 +41,7 @@ Add the crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-arena-lib = "0.9"
+arena-lib = "1"
 ```
 
 End-to-end use of every primitive:

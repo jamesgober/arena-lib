@@ -18,7 +18,7 @@
 
 This document is the canonical reference for every public-facing item in the `arena-lib` crate. It tracks the source of truth in `src/` and is updated before every release.
 
-> **Status:** `arena-lib` `0.9.0` ships the **Hardening + Audit** milestone. The 0.5 surface is feature-frozen; every public item carries a documented example, property tests cover the arena, interner, bump, and drop-arena invariants, and a runnable `examples/quick_start.rs` exercises all four primitives end-to-end. Audit findings are logged in [docs/release/v0.9.0.md](./release/v0.9.0.md). The next release is the 1.0 freeze.
+> **Status:** `arena-lib` `1.0.0` — **stable**. The API documented below is frozen for the entire 1.x line. Pre-1.0 hardening notes live in [docs/release/v0.9.0.md](./release/v0.9.0.md) (audit findings A1–A4); the 1.0 release note is in [docs/release/v1.0.0.md](./release/v1.0.0.md).
 
 <br>
 
@@ -47,7 +47,7 @@ This document is the canonical reference for every public-facing item in the `ar
 - **[Feature Flags](#feature-flags)**
   - [`std`](#feature-std)
 - **[Compatibility](#compatibility)**
-- **[Planned API Surface (1.0)](#planned-api-surface-10)**
+- **[API Stability (1.x)](#api-stability-1x)**
 - **[Notes](#notes)**
 
 <br><br>
@@ -58,7 +58,7 @@ Add `arena-lib` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-arena-lib = "0.9"
+arena-lib = "1"
 ```
 
 Or with `cargo`:
@@ -773,15 +773,15 @@ The crate runs identically on all Tier-1 targets. Platform-specific behavior —
 
 <br><br>
 
-<h2 id="planned-api-surface-10">Planned API Surface (1.0)</h2>
+<h2 id="api-stability-1x">API Stability (1.x)</h2>
 
-`0.9.0` is the **feature freeze**. The surface documented above is what 1.0 ships — no new public types, methods, or error variants are planned. The only remaining work is the final 1.0 release:
+The surface documented above is the **frozen 1.0 contract**. Any further evolution within the 1.x line is **purely additive**:
 
-| Area | Coming in | Purpose |
-| ---- | :-------: | ------- |
-| Stable 1.0 | `1.0.0` | Final API freeze (no surface changes from 0.9). Published to crates.io. |
+- New methods on existing types.
+- New variants on the `#[non_exhaustive]` `Error` enum.
+- New types in new modules.
 
-If a 1.x release later adds capabilities, they will be **purely additive** — new methods on existing types, new variants on the `#[non_exhaustive]` `Error` enum, or new types in their own modules. Anything that would break a 0.9-using caller is out of scope until a hypothetical 2.0.
+Anything that would break a 1.x caller — removed items, renamed methods, signature changes, reshaped error variants — is out of scope until a hypothetical 2.0. Per-release notes will continue to live under [`docs/release/`](./release/).
 
 <br><br>
 
