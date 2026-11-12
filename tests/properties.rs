@@ -8,6 +8,13 @@
 //!   `Symbol`, and `resolve(intern(s)) == Some(s)`.
 //! - **Bump**: alloc-then-read round-trips for any sequence of values;
 //!   the cursor only ever advances.
+//!
+//! Skipped under Miri: proptest's failure persistence reads the current
+//! directory, which Miri isolation rejects, and the case counts are too slow
+//! for the interpreter. `tests/miri_bump.rs` and the unit tests cover the
+//! unsafe paths there.
+
+#![cfg(not(miri))]
 
 use arena_lib::{Arena, Bump, DropArena, Interner};
 use proptest::prelude::*;

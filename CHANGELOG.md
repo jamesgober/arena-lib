@@ -9,13 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [1.1.0] - 2026-11-12
+
 ### Added
+
+- `Arena::try_get`, `Arena::try_get_mut` and `Arena::try_remove`, returning `Error::StaleIndex` for a handle that does not refer to a live element.
+- `Bump::try_with_capacity`, the fallible form of `Bump::with_capacity`.
+- Miri CI job running `cargo miri test` under Stacked Borrows and Tree Borrows.
+- Regression tests: `tests/miri_bump.rs` (aliasing, run under Miri) and `tests/generation_wrap.rs` (ignored; full 2^32-cycle check in release).
 
 ### Changed
 
+- New `Bump` chunks double in size up to 1 MiB (or the starting size, if larger).
+- Zero-sized `Bump` allocations no longer allocate a chunk.
+- `Arena::clear` skips retired slots when rebuilding the free list.
+- Error variant docs say when each variant is returned; arena docs say an `Index` is not tied to its arena.
+
 ### Fixed
 
-### Security
+- `Bump` wrote through a pointer derived from a shared borrow of the chunk, which is undefined behaviour under Stacked Borrows and Tree Borrows. Chunks are now raw allocations and every result pointer keeps the allocation's provenance.
+- A slot's 32-bit generation wrapped after 2^32 reuses, so a stale `Index` could resolve to a newer element. Exhausted slots are now retired.
+- `Bump::try_alloc` aborted on allocation failure; it now returns `Error::CapacityExceeded`.
+- The test suite builds with `--no-default-features` again.
 
 ---
 
@@ -103,7 +120,8 @@ Pre-1.0 hardening + audit. Feature freeze. The 0.5 public surface is preserved e
 - REPS compliance baseline.
 - CI for Linux/macOS/Windows on stable and MSRV (1.85).
 
-[Unreleased]: https://github.com/jamesgober/arena-lib/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/jamesgober/arena-lib/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/jamesgober/arena-lib/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/jamesgober/arena-lib/compare/v0.9.0...v1.0.0
 [0.9.0]: https://github.com/jamesgober/arena-lib/compare/v0.5.0...v0.9.0
 [0.5.0]: https://github.com/jamesgober/arena-lib/compare/v0.2.0...v0.5.0
