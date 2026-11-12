@@ -18,7 +18,7 @@ fn stale_index_never_resurrects_after_generation_exhaustion() {
         let idx = arena.insert(i);
         let _ = arena.remove(idx);
     }
-    let fresh = arena.insert(0xDEAD);
+    let fresh = arena.insert(0xdead);
     assert_eq!(arena.get(stale), None, "stale handle must stay stale");
     assert_eq!(arena.try_get(stale), Err(Error::StaleIndex));
     assert_ne!(
@@ -26,5 +26,5 @@ fn stale_index_never_resurrects_after_generation_exhaustion() {
         stale.slot(),
         "an exhausted slot must be retired"
     );
-    assert_eq!(arena.get(fresh), Some(&0xDEAD));
+    assert_eq!(arena.get(fresh), Some(&0xdead));
 }
