@@ -5,6 +5,16 @@
 //! still-held handle pointing at that slot is detected and rejected — no
 //! use-after-free, no dangling references, all in safe Rust.
 //!
+//! Generations are 32-bit. A slot whose generation counter is exhausted
+//! (after about 4 billion reuses of that one slot) is retired instead of
+//! wrapping: it is never handed out again, so an old handle can never
+//! resolve to a newer element. A retired slot keeps its storage until the
+//! arena is dropped.
+//!
+//! An [`Index`] is not tied to the arena that issued it. Using a handle
+//! from one arena on another resolves whatever the second arena holds at
+//! that slot and generation, if anything; keep each handle with its arena.
+//!
 //! # Cost summary
 //!
 //! - `insert`: amortized O(1).
@@ -21,8 +31,13 @@ use crate::error::{Error, Result};
 /// An `Index` is `Copy`, cheap to pass by value, and remains valid until the
 /// element it points at is removed. Once removed, the handle becomes stale
 /// and all lookups against the arena return `None` (or [`Error::StaleIndex`]
-/// from fallible variants). Reusing the underlying slot under a new
-/// generation does **not** revive the original handle.
+/// from the fallible variants such as [`Arena::try_get`]). Reusing the
+/// underlying slot under a new generation does **not** revive the original
+/// handle, and a slot whose generation counter is exhausted is retired
+/// rather than wrapped.
+///
+/// An `Index` is not scoped to the arena that issued it; see the
+/// [module-level docs](self).
 ///
 /// # Layout
 ///
@@ -56,9 +71,16 @@ enum Occupant<T> {
 }
 
 struct Slot<T> {
+    /// Generation of the current (or next) occupant. Starts at 1 and only
+    /// grows. [`RETIRED`] marks a vacant slot whose counter is exhausted;
+    /// such a slot is never linked into the free list again.
     generation: u32,
     occupant: Occupant<T>,
 }
+
+/// Generation value of a retired slot. No handle ever carries it, because
+/// live generations start at 1 and never wrap.
+const RETIRED: u32 = 0;
 
 /// Generational arena. See the [module-level docs](self).
 ///
@@ -176,6 +198,50 @@ impl<T> Arena<T> {
         }
     }
 
+    /// Returns a shared reference to the element behind `idx`, or
+    /// [`Error::StaleIndex`] if the handle does not refer to a live element.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use arena_lib::{Arena, Error};
+    ///
+    /// let mut arena = Arena::new();
+    /// let h = arena.insert(5_u32);
+    /// assert_eq!(arena.try_get(h), Ok(&5));
+    /// arena.remove(h);
+    /// assert_eq!(arena.try_get(h), Err(Error::StaleIndex));
+    /// ```
+    #[inline]
+    pub fn try_get(&self, idx: Index) -> Result<&T> {
+        self.get(idx).ok_or(Error::StaleIndex)
+    }
+
+    /// Returns a unique reference to the element behind `idx`, or
+    /// [`Error::StaleIndex`] if the handle does not refer to a live element.
+    #[inline]
+    pub fn try_get_mut(&mut self, idx: Index) -> Result<&mut T> {
+        self.get_mut(idx).ok_or(Error::StaleIndex)
+    }
+
+    /// Removes the element behind `idx` and returns it, or
+    /// [`Error::StaleIndex`] if the handle does not refer to a live element.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use arena_lib::{Arena, Error};
+    ///
+    /// let mut arena = Arena::new();
+    /// let h = arena.insert("payload");
+    /// assert_eq!(arena.try_remove(h), Ok("payload"));
+    /// assert_eq!(arena.try_remove(h), Err(Error::StaleIndex));
+    /// ```
+    #[inline]
+    pub fn try_remove(&mut self, idx: Index) -> Result<T> {
+        self.remove(idx).ok_or(Error::StaleIndex)
+    }
+
     /// Inserts `value` and returns a fresh [`Index`].
     ///
     /// Panics on the catastrophic case where the slot counter would overflow
@@ -229,7 +295,8 @@ impl<T> Arena<T> {
     ///
     /// The slot's generation counter advances so the consumed handle —
     /// and any other handle previously issued for the same slot — never
-    /// resolves again, even if the slot is reused by a later `insert`.
+    /// resolves again, even if the slot is reused by a later `insert`. If
+    /// the counter is exhausted, the slot is retired and never reused.
     ///
     /// # Examples
     ///
@@ -251,12 +318,19 @@ impl<T> Arena<T> {
             return None;
         }
 
-        let vacated = Occupant::Vacant {
-            next_free: self.free_head,
+        let prior = if let Some(next) = slot.generation.checked_add(1) {
+            slot.generation = next;
+            let vacated = Occupant::Vacant {
+                next_free: self.free_head,
+            };
+            self.free_head = Some(idx.slot);
+            core::mem::replace(&mut slot.occupant, vacated)
+        } else {
+            // Generation exhausted: retire the slot instead of wrapping, so
+            // no handle issued for it can ever resolve again.
+            slot.generation = RETIRED;
+            core::mem::replace(&mut slot.occupant, Occupant::Vacant { next_free: None })
         };
-        let prior = core::mem::replace(&mut slot.occupant, vacated);
-        slot.generation = slot.generation.wrapping_add(1);
-        self.free_head = Some(idx.slot);
         self.len -= 1;
 
         match prior {
@@ -268,22 +342,24 @@ impl<T> Arena<T> {
     /// Removes every element and resets the free list.
     ///
     /// Underlying capacity is retained. Generation counters are preserved,
-    /// so handles issued before the clear remain stale afterwards.
+    /// so handles issued before the clear remain stale afterwards. Retired
+    /// slots stay retired.
     pub fn clear(&mut self) {
-        let total = self.slots.len();
-        for (i, slot) in self.slots.iter_mut().enumerate() {
+        // Rebuild the free list back to front so it hands out the lowest
+        // slot first, skipping retired slots.
+        let mut next_free = None;
+        for (i, slot) in self.slots.iter_mut().enumerate().rev() {
             if matches!(slot.occupant, Occupant::Occupied(_)) {
-                slot.generation = slot.generation.wrapping_add(1);
+                slot.generation = slot.generation.checked_add(1).unwrap_or(RETIRED);
             }
-            slot.occupant = Occupant::Vacant {
-                next_free: if i + 1 < total {
-                    Some((i + 1) as u32)
-                } else {
-                    None
-                },
-            };
+            if slot.generation == RETIRED {
+                slot.occupant = Occupant::Vacant { next_free: None };
+            } else {
+                slot.occupant = Occupant::Vacant { next_free };
+                next_free = Some(i as u32);
+            }
         }
-        self.free_head = if total == 0 { None } else { Some(0) };
+        self.free_head = next_free;
         self.len = 0;
     }
 
@@ -389,6 +465,8 @@ impl<'a, T> Iterator for IterMut<'a, T> {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use super::*;
 
     #[test]
@@ -450,6 +528,87 @@ mod tests {
             *v = 99;
         }
         assert_eq!(a.get(i), Some(&99));
+    }
+
+    /// Forces the slot behind `idx` to the last generation, as if it had
+    /// been reused about 4 billion times.
+    fn exhaust_generation(a: &mut Arena<u32>, idx: Index) -> Index {
+        a.slots[idx.slot as usize].generation = u32::MAX;
+        Index {
+            generation: u32::MAX,
+            slot: idx.slot,
+        }
+    }
+
+    #[test]
+    fn exhausted_slot_is_retired_on_remove() {
+        let mut a = Arena::new();
+        let first = a.insert(1_u32);
+        let last = exhaust_generation(&mut a, first);
+        assert_eq!(a.get(last), Some(&1));
+        assert_eq!(a.remove(last), Some(1));
+
+        // Under 1.0.0 the generation wrapped to 0 and the slot was reused,
+        // so one more cycle made `first` (generation 1) resolve again.
+        let fresh = a.insert(2);
+        let again = a.insert(3);
+        assert_ne!(
+            fresh.slot(),
+            first.slot(),
+            "retired slot must not be reused"
+        );
+        assert_ne!(again.slot(), first.slot());
+        assert_eq!(a.get(first), None);
+        assert_eq!(a.get(last), None);
+        assert_eq!(a.try_get(first), Err(Error::StaleIndex));
+        assert_eq!(a.len(), 2);
+        assert_eq!(a.iter().count(), 2);
+    }
+
+    #[test]
+    fn exhausted_slot_is_retired_on_clear() {
+        let mut a = Arena::new();
+        let first = a.insert(1_u32);
+        let _second = a.insert(2);
+        let last = exhaust_generation(&mut a, first);
+        a.clear();
+        assert_eq!(a.get(last), None);
+
+        // Only slot 1 is free; slot 0 is retired.
+        let x = a.insert(10);
+        let y = a.insert(11);
+        assert_eq!(x.slot(), 1);
+        assert_eq!(y.slot(), 2);
+        assert_eq!(a.get(first), None);
+
+        // A second clear keeps slot 0 retired.
+        a.clear();
+        assert_ne!(a.insert(12).slot(), 0);
+    }
+
+    #[test]
+    fn clear_hands_out_lowest_slot_first() {
+        let mut a = Arena::new();
+        for i in 0..4_u32 {
+            let _ = a.insert(i);
+        }
+        a.clear();
+        let slots: Vec<u32> = (0..4).map(|i| a.insert(i).slot()).collect();
+        assert_eq!(slots, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn fallible_lookups_return_stale_index() {
+        let mut a = Arena::new();
+        let h = a.insert(7_u32);
+        assert_eq!(a.try_get(h), Ok(&7));
+        if let Ok(v) = a.try_get_mut(h) {
+            *v = 8;
+        }
+        assert_eq!(a.try_remove(h), Ok(8));
+        assert_eq!(a.try_get(h), Err(Error::StaleIndex));
+        assert_eq!(a.try_get_mut(h), Err(Error::StaleIndex));
+        assert_eq!(a.try_remove(h), Err(Error::StaleIndex));
     }
 
     #[test]

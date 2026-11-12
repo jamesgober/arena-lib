@@ -16,24 +16,33 @@ use core::fmt;
 pub enum Error {
     /// The provided index does not point to a live element.
     ///
-    /// Returned when an [`Index`](crate::Index) is used after its slot has
-    /// been removed and either left vacant or re-issued under a new
-    /// generation, or when the index was never live in this arena.
+    /// Returned by [`Arena::try_get`](crate::arena::Arena::try_get),
+    /// [`Arena::try_get_mut`](crate::arena::Arena::try_get_mut) and
+    /// [`Arena::try_remove`](crate::arena::Arena::try_remove) when an
+    /// [`Index`](crate::Index) is used after its slot has been removed and
+    /// either left vacant, re-issued under a new generation, or retired, or
+    /// when the slot was never issued. An `Index` is not tied to the arena
+    /// that issued it, so a handle from a different arena is reported as
+    /// stale only when nothing in this arena matches its slot and generation.
     StaleIndex,
 
-    /// An allocation request exceeded the allocator's available capacity.
+    /// An allocation request could not be satisfied.
     ///
     /// Returned by [`Bump::try_alloc`](crate::bump::Bump::try_alloc) and
-    /// related fallible allocation entry points when the underlying buffer
-    /// could not be grown to satisfy the request.
+    /// [`Bump::try_with_capacity`](crate::bump::Bump::try_with_capacity)
+    /// when a chunk large enough for the request does not fit a valid
+    /// layout (more than `isize::MAX` bytes) or the global allocator
+    /// reports failure.
     CapacityExceeded,
 
     /// A monotonic counter would have wrapped past its representable range.
     ///
-    /// Returned by [`Arena::insert`](crate::arena::Arena::insert) and the
-    /// interner when generation or symbol counters reach their upper bound.
-    /// Treat this as a permanent failure: drop the affected container and
-    /// build a new one.
+    /// Returned by [`Arena::try_insert`](crate::arena::Arena::try_insert)
+    /// when the arena already holds `u32::MAX` slots, and by the interner
+    /// when its symbol counter reaches its upper bound. Treat this as a
+    /// permanent failure: drop the affected container and build a new one.
+    /// (Exhausted per-slot generation counters do not produce this error;
+    /// the slot is retired and the arena keeps working.)
     CounterOverflow,
 }
 

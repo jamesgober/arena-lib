@@ -18,7 +18,7 @@
 
 This document is the canonical reference for every public-facing item in the `arena-lib` crate. It tracks the source of truth in `src/` and is updated before every release.
 
-> **Status:** `arena-lib` `1.0.0` — **stable**. The API documented below is frozen for the entire 1.x line. Pre-1.0 hardening notes live in [docs/release/v0.9.0.md](./release/v0.9.0.md) (audit findings A1–A4); the 1.0 release note is in [docs/release/v1.0.0.md](./release/v1.0.0.md).
+> **Status:** `arena-lib` `1.1.0`, **stable**. The API documented below is frozen for the entire 1.x line. Pre-1.0 hardening notes live in [docs/release/v0.9.0.md](./release/v0.9.0.md) (audit findings A1–A4); the 1.0 release note is in [docs/release/v1.0.0.md](./release/v1.0.0.md), and the latest is [docs/release/v1.1.0.md](./release/v1.1.0.md).
 
 <br>
 
@@ -165,9 +165,9 @@ The crate-wide error type.
 
 | Variant | When it is returned |
 | ------- | ------------------- |
-| `StaleIndex` | An [`Index`](#index) was used after its slot was removed (or it never belonged to the arena). |
-| `CapacityExceeded` | A [`Bump::try_alloc`](#bump) request exceeded the arena's remaining chunk space. |
-| `CounterOverflow` | The arena's slot counter or the interner's symbol counter would have wrapped past `u32::MAX`. |
+| `StaleIndex` | Returned by `Arena::try_get`, `try_get_mut` and `try_remove` when an [`Index`](#index) does not refer to a live element (its slot was removed, reused, retired, or never issued). Indices are not tied to an arena, so a handle from another arena is reported only when nothing matches its slot and generation. |
+| `CapacityExceeded` | A [`Bump::try_alloc`](#bump) or `Bump::try_with_capacity` request needed a chunk that does not fit a valid layout (more than `isize::MAX` bytes) or that the global allocator could not provide. |
+| `CounterOverflow` | The arena's slot counter or the interner's symbol counter would have wrapped past `u32::MAX`. Exhausted per-slot generations do not produce it; the slot is retired. |
 
 **Trait impls:** `Debug`, `Clone`, `PartialEq`, `Eq`, `Display`, and `std::error::Error` (under the `std` feature).
 
@@ -266,6 +266,7 @@ The generational arena. `Arena::new` is `const` and allocates lazily; use `Arena
 
 - `get(idx)` returns `Some(&T)` only if the handle is still live; stale handles return `None`.
 - `get_mut(idx)` is the unique-borrow counterpart.
+- `try_get(idx)` / `try_get_mut(idx)` (since 1.1.0) return `Err(Error::StaleIndex)` instead of `None`.
 
 **Insertion**
 
@@ -275,7 +276,16 @@ The generational arena. `Arena::new` is `const` and allocates lazily; use `Arena
 **Removal**
 
 - `remove(idx)` returns the element if the handle is live (and increments the slot's generation counter, invalidating any other handle to that slot). Stale handles return `None`.
+- `try_remove(idx)` (since 1.1.0) returns `Err(Error::StaleIndex)` instead of `None`.
 - `clear()` removes every element, bumps every occupied generation, and retains capacity.
+
+**Generation exhaustion**
+
+Generations are 32-bit. When a slot's generation counter would wrap (after about 4 billion reuses of that one slot), the slot is retired: it is never handed out again, so an old handle cannot resolve to a newer element. Before 1.1.0 the counter wrapped and a stale handle could resolve again. A retired slot keeps its storage until the arena is dropped.
+
+**Scope of handles**
+
+An `Index` is not tied to the arena that issued it. A handle from one arena used on another resolves whatever the second arena holds at that slot and generation, if anything. Keep each handle with its arena.
 
 **Iteration**
 
@@ -506,9 +516,9 @@ Symbols are scoped to the [`Interner`](#interner) that issued them: id values co
 
 <h3 id="bump-arena">Bump Arena</h3>
 
-A linear allocator for short-lived scratch data, backed by a linked list of chunks. Allocations are O(1) (pointer bump + write); the entire arena clears in O(1) via [`Bump::reset`](#bump). Multiple references handed out from a shared `&self` borrow coexist safely because each allocation hands out a disjoint slice of a chunk.
+A linear allocator for short-lived scratch data, backed by a list of raw chunks from the global allocator. Allocations are O(1) (pointer bump + write); the entire arena clears in O(1) via [`Bump::reset`](#bump). Multiple references handed out from a shared `&self` borrow coexist safely because each allocation hands out a disjoint slice of a chunk.
 
-When a chunk fills, the arena allocates a new one and continues — `alloc` is effectively infallible (it only fails if the global allocator itself fails, just like `Vec::push` or `Box::new`). After `reset`, subsequent allocations refill the existing chunks before any new chunk is requested.
+When a chunk fills, the arena allocates a new one and continues. New chunks double in size (from the starting size, up to 1 MiB per chunk or the starting size if larger), so a large arena holds O(log n) chunks. `alloc` panics only if a chunk cannot be allocated; `try_alloc` returns `Error::CapacityExceeded` in that case. Zero-sized values never allocate a chunk. After `reset`, subsequent allocations refill the existing chunks before any new chunk is requested.
 
 **Cost summary**
 
@@ -530,6 +540,7 @@ pub struct Bump;
 impl Bump {
     pub fn new() -> Self;
     pub fn with_capacity(capacity: usize) -> Self;
+    pub fn try_with_capacity(capacity: usize) -> Result<Self>; // since 1.1.0
 
     pub fn chunk_capacity(&self) -> usize;
     pub fn chunk_count(&self) -> usize;
@@ -547,14 +558,15 @@ Multi-chunk bump arena.
 **Constructors**
 
 - `new` — empty arena; the first allocation triggers the allocation of an initial chunk (default size 4 KiB).
-- `with_capacity(n)` — pre-allocates an initial chunk of `n` bytes. Subsequent chunks (if needed) are at least `n` bytes with a floor of 4 KiB.
+- `with_capacity(n)`: pre-allocates an initial chunk of `n` bytes. Subsequent chunks (if needed) are at least `n` bytes with a floor of 4 KiB, doubling as the arena grows. Panics if the initial chunk cannot be allocated.
+- `try_with_capacity(n)` (since 1.1.0): the fallible form, returning `Err(Error::CapacityExceeded)` for an impossible size or an allocator failure.
 
 **Allocation**
 
-- `alloc(value)` — pointer bump + write, returning `&mut T` tied to `&self`. Allocates a new chunk if needed. Panics only if the global allocator fails.
-- `try_alloc(value)` — explicit fallible variant returning `Result<&mut T>`.
+- `alloc(value)`: pointer bump + write, returning `&mut T` tied to `&self`. Allocates a new chunk if needed. Panics only if a needed chunk cannot be allocated.
+- `try_alloc(value)`: explicit fallible variant returning `Result<&mut T>`; `Err(Error::CapacityExceeded)` when a needed chunk cannot be allocated.
 
-The returned `&mut T` borrows from `&self`: [`Bump`](#bump) owns the underlying chunks and hands out disjoint regions per call, so multiple `&mut T` from the same `&Bump` coexist without aliasing. This matches `bumpalo::Bump::alloc`.
+The returned `&mut T` borrows from `&self`: [`Bump`](#bump) owns the underlying chunks and hands out disjoint regions per call, so multiple `&mut T` from the same `&Bump` coexist without aliasing. This matches `bumpalo::Bump::alloc`. Chunks are held as raw allocations, and every returned pointer is derived from the chunk's allocation pointer, so the arena is free of undefined behaviour under Miri's Stacked Borrows and Tree Borrows models (checked in CI since 1.1.0).
 
 **Inspection**
 

@@ -25,6 +25,7 @@ fn every_variant_has_non_empty_display() {
     }
 }
 
+#[cfg(feature = "std")]
 #[test]
 fn error_is_std_error() {
     let e: Box<dyn std::error::Error> = Box::new(Error::StaleIndex);

@@ -31,7 +31,7 @@ Designed around four guarantees:
 
 Every public path is safe Rust. `unsafe` lives only in measured, documented internals — never in your call sites.
 
-> **Status:** v1.0.0 — **stable**. API frozen. Within the 1.x line, only purely additive changes are permitted (new methods on existing types, new variants on the `#[non_exhaustive]` `Error` enum). Anything that would break a 1.x caller is out of scope until a hypothetical 2.0.
+> **Status:** v1.1.0, **stable**. API frozen. Within the 1.x line, only purely additive changes are permitted (new methods on existing types, new variants on the `#[non_exhaustive]` `Error` enum). Anything that would break a 1.x caller is out of scope until a hypothetical 2.0.
 
 ---
 
